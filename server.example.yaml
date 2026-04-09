@@ -1,0 +1,35 @@
+server:
+  listen: "0.0.0.0"
+  port: 8443
+  tls:
+    enabled: false  # true для HTTPS (wss://), false для HTTP (ws://)
+    cert: "/path/to/cert.pem"  # требуется если tls.enabled=true
+    key: "/path/to/key.pem"    # требуется если tls.enabled=true
+
+auth:
+  timeout: 10  # таймаут аутентификации в секундах
+  users:
+    - username: "user1"
+      password: "password1111"
+    - username: "user2"
+      password: "pass2"
+
+tun:
+  name: "vpnsrv0"
+  ip: "10.0.0.1"
+  subnet: 24
+  ip6: "fd00::1"
+  subnet6: 64
+
+#routes:
+#  - dst: "0.0.0.0/0"
+#    gw: ""
+#    metric: 100
+#  - dst: "::/0"
+#    gw: ""
+#    metric: 100
+
+timeouts:
+  keepalive_interval: 30  # секунд
+  keepalive_timeout: 90   # секунд
+  fragment_timeout: 5     # секунд

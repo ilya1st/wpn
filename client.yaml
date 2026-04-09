@@ -1,0 +1,35 @@
+client:
+  server: "127.0.0.1"
+  port: 8443
+  use_tls: false  # true для wss://, false для ws://
+
+auth:
+  username: "user1"
+  password: "password1111"
+  timeout: 10  # таймаут аутентификации в секундах
+
+proxy:
+  enabled: false
+  type: "http"  # http или socks
+  address: "proxy.example.com"
+  port: 3128
+  username: ""
+  password: ""
+
+tun:
+  name: "vpnclient0"
+  ip: ""  # авто (получит от сервера)
+  subnet: 0
+  
+#routes:
+  # Эти маршруты имеют БОЛЬШИЙ ПРИОРИТЕТ чем серверные
+#  - dst: "192.168.0.0/16"
+#    gw: ""
+#    metric: 50
+
+timeouts:
+  keepalive_interval: 30
+  keepalive_timeout: 90
+  fragment_timeout: 5
+  reconnect_delay: 5
+  max_reconnects: 10
