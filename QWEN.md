@@ -121,6 +121,7 @@ sudo ./vpnclient -config client.yaml
 ## 📋 Следующие шаги
 
 - [ ] Добавление сжатия (флаг COMPRESSED)
+- [ ] клиент при соединении по HTTPS должен маскироваться под реальные браузеры по TLS отпечаткам (fingerprinting) и поддерживать подмену TLS SNI
 - [ ] Unit тесты (protocol, config, routes)
 - [ ] Логирование и метрики (Prometheus)
 - [ ] Systemd unit файлы
