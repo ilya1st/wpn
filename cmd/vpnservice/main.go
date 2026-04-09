@@ -50,7 +50,8 @@ func main() {
 	log.Printf("TUN interface %s created", tunIface.Name())
 
 	// Настройка маршрутов сервера
-	routeManager := routes.NewManager(cfg.TUN.Name)
+	// Используем реальное имя интерфейса (на macOS это utun0/1/... а не из конфига)
+	routeManager := routes.NewManager(tunIface.Name())
 
 	// Автоматически добавляем маршрут на подсеть сервера через TUN интерфейс
 	if cfg.TUN.IP != "" && cfg.TUN.Subnet > 0 {
