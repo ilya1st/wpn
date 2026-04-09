@@ -1,0 +1,10 @@
+# Бинарники
+vpnservice
+vpnclient
+vpnclient_darwin_amd64
+vpnclient_darwin_arm64
+vpnservice_darwin_arm64
+vpnservice_darwin_amd64
+
+# Qwen
+.qwen/
