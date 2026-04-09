@@ -23,8 +23,9 @@ type ctlInfo struct {
 const (
 	_UTUN_OPT_IFNAME = 2
 	CTLIOCGINFO      = 0xc0644e03 // CTLIOCGINFO ioctl code
-	AF_SYS_CONTROL   = 2
+	AF_SYSTEM        = 32
 	SYSPROTO_CONTROL = 2
+	SOCK_DGRAM       = 2
 )
 
 // sockaddr_ctl структура для подключения к utun
@@ -39,31 +40,49 @@ type sockaddrCtl struct {
 
 // newTUN создаёт новый utun интерфейс (macOS)
 func newTUN(name string) (fileInterface, string, error) {
-	// Создаём сокет для системного контроллера
-	fd, err := syscall.Socket(AF_SYS_CONTROL, syscall.SOCK_DGRAM, SYSPROTO_CONTROL)
-	if err != nil {
-		return nil, "", fmt.Errorf("socket AF_SYSTEM: %w", err)
+	// Создаём сокет для системного контроллера через RawSyscall
+	// syscall.Socket не поддерживает AF_SYSTEM на darwin
+	fd, _, errno := syscall.RawSyscall(
+		syscall.SYS_SOCKET,
+		AF_SYSTEM,
+		SOCK_DGRAM,
+		SYSPROTO_CONTROL,
+	)
+	if errno != 0 {
+		return nil, "", fmt.Errorf("socket AF_SYSTEM: %w", errno)
+	}
+
+	// Устанавливаем FD_CLOEXEC
+	_, _, errno = syscall.RawSyscall(
+		syscall.SYS_FCNTL,
+		fd,
+		uintptr(syscall.F_SETFD),
+		uintptr(syscall.FD_CLOEXEC),
+	)
+	if errno != 0 {
+		syscall.Close(int(fd))
+		return nil, "", fmt.Errorf("fcntl FD_CLOEXEC: %w", errno)
 	}
 
 	// Получаем ID utun контроллера
 	var info ctlInfo
 	copy(info.Name[:], utunControlName)
 
-	_, _, errno := syscall.Syscall(
+	_, _, errno = syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(fd),
 		uintptr(CTLIOCGINFO),
 		uintptr(unsafe.Pointer(&info)),
 	)
 	if errno != 0 {
-		syscall.Close(fd)
+		syscall.Close(int(fd))
 		return nil, "", fmt.Errorf("ioctl CTLIOCGINFO: %w", errno)
 	}
 
 	// Подключаемся к utun контроллеру
 	sc := sockaddrCtl{
 		scLen:    32,
-		scFamily: AF_SYS_CONTROL,
+		scFamily: AF_SYSTEM,
 		scPort:   SYSPROTO_CONTROL,
 		scID:     info.ID,
 		scUnit:   0, // 0 = автоматический выбор utun номер
@@ -71,13 +90,13 @@ func newTUN(name string) (fileInterface, string, error) {
 
 	_, _, errno = syscall.RawSyscall6(
 		syscall.SYS_CONNECT,
-		uintptr(fd),
+		fd,
 		uintptr(unsafe.Pointer(&sc)),
 		uintptr(unsafe.Sizeof(sc)),
 		0, 0, 0,
 	)
 	if errno != 0 {
-		syscall.Close(fd)
+		syscall.Close(int(fd))
 		return nil, "", fmt.Errorf("connect utun: %w", errno)
 	}
 
@@ -86,7 +105,7 @@ func newTUN(name string) (fileInterface, string, error) {
 	ifnameLen := uint64(len(ifname))
 	_, _, errno = syscall.Syscall6(
 		syscall.SYS_GETSOCKOPT,
-		uintptr(fd),
+		fd,
 		uintptr(2), // SYSPROTO_CONTROL
 		uintptr(_UTUN_OPT_IFNAME),
 		uintptr(unsafe.Pointer(&ifname[0])),
@@ -94,7 +113,7 @@ func newTUN(name string) (fileInterface, string, error) {
 		0,
 	)
 	if errno != 0 {
-		syscall.Close(fd)
+		syscall.Close(int(fd))
 		return nil, "", fmt.Errorf("getsockopt UTUN_OPT_IFNAME: %w", errno)
 	}
 
@@ -109,7 +128,7 @@ func newTUN(name string) (fileInterface, string, error) {
 	}
 
 	// Оборачиваем fd в интерфейс для Read/Write
-	file := &darwinFile{fd: fd, name: actualName}
+	file := &darwinFile{fd: int(fd), name: actualName}
 	return file, actualName, nil
 }
 
