@@ -100,6 +100,13 @@ internal/routes/            ← Управление маршрутами (netli
    - `sockaddr_ctl`: 32 байта, `[5]uint32` reserved, `ss_sysaddr = AF_SYS_CONTROL`
    - Имя интерфейса: всегда реальное (`utun0/1/...`), имя из конфига игнорируется
    - `ifconfig inet`: point-to-point формат `<local> <dest> netmask <mask>`
+7. **macOS маршруты** — кроссплатформенная реализация:
+   - `routes_common.go` — общий код (Manager, ApplyRoutes)
+   - `routes_linux.go` — netlink (Linux)
+   - `routes_darwin.go` — `route add/delete` через exec (macOS)
+   - Сервер автоматически добавляет маршрут на подсеть `10.0.0.0/24`
+   - Используется `tunIface.Name()` (`utunX`) а не `cfg.TUN.Name`
+8. **macOS пинги** — работают между сервером macOS и клиентом Linux
 
 ## 🔄 Последовательность подключения
 
@@ -207,5 +214,5 @@ sudo ./vpnclient -config client.yaml
 
 ---
 
-*Последнее обновление: 09 Апреля 2026*
-*Кроссплатформенный TUN (Linux + macOS), платформо-зависимые файлы с build tags, бинарники статические*
+*Последнее обновление: 10 Апреля 2026*
+*Полная кроссплатформенность: TUN, маршруты, пинги между macOS и Linux работают*
