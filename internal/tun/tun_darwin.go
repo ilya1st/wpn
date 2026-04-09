@@ -23,6 +23,8 @@ type ctlInfo struct {
 const (
 	_UTUN_OPT_IFNAME = 2
 	CTLIOCGINFO      = 0xc0644e03 // CTLIOCGINFO ioctl code
+	AF_SYS_CONTROL   = 2
+	SYSPROTO_CONTROL = 2
 )
 
 // sockaddr_ctl структура для подключения к utun
@@ -37,10 +39,10 @@ type sockaddrCtl struct {
 
 // newTUN создаёт новый utun интерфейс (macOS)
 func newTUN(name string) (fileInterface, string, error) {
-	// Открываем utun устройство
-	fd, err := syscall.Open("/dev/utun", syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	// Создаём сокет для системного контроллера
+	fd, err := syscall.Socket(AF_SYS_CONTROL, syscall.SOCK_DGRAM, SYSPROTO_CONTROL)
 	if err != nil {
-		return nil, "", fmt.Errorf("open /dev/utun: %w", err)
+		return nil, "", fmt.Errorf("socket AF_SYSTEM: %w", err)
 	}
 
 	// Получаем ID utun контроллера
@@ -58,13 +60,13 @@ func newTUN(name string) (fileInterface, string, error) {
 		return nil, "", fmt.Errorf("ioctl CTLIOCGINFO: %w", errno)
 	}
 
-	// Подключаемся к utun контроллеру через raw socket connect
+	// Подключаемся к utun контроллеру
 	sc := sockaddrCtl{
 		scLen:    32,
-		scFamily: 2, // AF_SYSTEM
-		scPort:   2, // SYSPROTO_CONTROL
+		scFamily: AF_SYS_CONTROL,
+		scPort:   SYSPROTO_CONTROL,
 		scID:     info.ID,
-		scUnit:   0, // 0 = автоматический выбор
+		scUnit:   0, // 0 = автоматический выбор utun номер
 	}
 
 	_, _, errno = syscall.RawSyscall6(
@@ -119,8 +121,11 @@ func configureAddress(name, addr string) error {
 		return fmt.Errorf("parse CIDR: %w", err)
 	}
 
+	// Получаем адрес сети в формате x.x.x.x
+	dstIP := ipNet.IP.Mask(ipNet.Mask)
+
 	// Используем ifconfig для установки адреса
-	cmd := execCommand("ifconfig", name, "inet", ip.String(), ipNet.IP.String(), "add")
+	cmd := execCommand("ifconfig", name, "inet", ip.String(), "netmask", net.IP(ipNet.Mask).String(), dstIP.String())
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ifconfig inet: %s: %w", string(output), err)
 	}
