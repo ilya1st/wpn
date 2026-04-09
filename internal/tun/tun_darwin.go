@@ -149,10 +149,20 @@ func configureAddress(name, addr string) error {
 		return fmt.Errorf("parse CIDR: %w", err)
 	}
 
-	// На macOS просто задаём IP и netmask
+	// На macOS для utun (point-to-point) нужен destination адрес
+	// Формат: ifconfig <iface> inet <local> <dest> netmask <mask>
+	// Destination = первый usable IP в подсети (или адрес сервера)
 	mask := net.IP(ipNet.Mask).String()
+	dstIP := ipNet.IP.Mask(ipNet.Mask).To4()
+	if dstIP != nil {
+		// Increment network address by 1 to get first usable IP
+		dstIP[3]++
+	} else {
+		// Fallback: same as local IP
+		dstIP = ip.To4()
+	}
 
-	cmd := execCommand("ifconfig", name, "inet", ip.String(), "netmask", mask)
+	cmd := execCommand("ifconfig", name, "inet", ip.String(), dstIP.String(), "netmask", mask)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ifconfig inet: %s: %w", string(output), err)
 	}
