@@ -16,6 +16,7 @@ import (
 type ServerConfig struct {
 	Listen string
 	Port   int
+	Path   string
 	TLS    bool
 	Cert   string
 	Key    string
@@ -62,7 +63,13 @@ func NewServer(config ServerConfig) *Server {
 func (s *Server) Start(handler func(conn *websocket.Conn)) error {
 	addr := fmt.Sprintf("%s:%d", s.config.Listen, s.config.Port)
 
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	// Используем path из конфига, или "/" если не задан
+	path := s.config.Path
+	if path == "" {
+		path = "/"
+	}
+
+	http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		conn, err := s.upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			fmt.Printf("WebSocket upgrade error: %v\n", err)

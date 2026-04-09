@@ -31,6 +31,7 @@ type ClientConfig struct {
 type ServerSection struct {
 	Listen string     `yaml:"listen"`
 	Port   int        `yaml:"port"`
+	Path   string     `yaml:"path"`
 	TLS    TLSSection `yaml:"tls"`
 }
 
@@ -64,9 +65,10 @@ type TUNSection struct {
 
 // ClientSection параметры клиента
 type ClientSection struct {
-	Server string `yaml:"server"`
-	Port   int    `yaml:"port"`
-	UseTLS bool   `yaml:"use_tls"`
+	Server      string `yaml:"server"`
+	Port        int    `yaml:"port"`
+	UseTLS      bool   `yaml:"use_tls"`
+	WsLocation  string `yaml:"ws_location"`
 }
 
 // ClientAuthSection аутентификация клиента
@@ -242,5 +244,9 @@ func (c *ClientConfig) GetServerURL() string {
 	if c.Client.UseTLS {
 		protocol = "wss"
 	}
-	return fmt.Sprintf("%s://%s:%d/ws", protocol, c.Client.Server, c.Client.Port)
+	location := "/ws"
+	if c.Client.WsLocation != "" {
+		location = c.Client.WsLocation
+	}
+	return fmt.Sprintf("%s://%s:%d%s", protocol, c.Client.Server, c.Client.Port, location)
 }

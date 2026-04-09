@@ -86,6 +86,7 @@ func main() {
 	wsServer := ws.NewServer(ws.ServerConfig{
 		Listen: cfg.Server.Listen,
 		Port:   cfg.Server.Port,
+		Path:   cfg.Server.Path,
 		TLS:    cfg.Server.TLS.Enabled,
 		Cert:   cfg.Server.TLS.Cert,
 		Key:    cfg.Server.TLS.Key,
