@@ -127,7 +127,7 @@ docker run --rm -it \
   --device /dev/net/tun \
   -v /home/iazarov/vpn:/vpn \
   -p 8443:8443 \
-  bash@latest bash
+  bash bash
 
 # 3. Внутри контейнера — сервер
 /vpn/vpnservice -config /vpn/test-server.yaml
