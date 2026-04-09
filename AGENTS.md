@@ -23,8 +23,8 @@ internal/routes/            ← Управление маршрутами (netli
 
 1. **Go версия:** 1.19 (зависимости совместимы, не обновлять без проверки)
 2. **WebSocket библиотека:** `gorilla/websocket` v1.5.3
-3. **TUN интерфейс:** **syscall `ioctl TUNSETIFF`** (без внешних зависимостей, Linux)
-4. **Маршруты:** `vishvananda/netlink` v1.1.0
+3. **TUN интерфейс:** **кроссплатформенный** (Linux: syscall `TUNSETIFF`, macOS: utun control-сокеты, build tags)
+4. **Маршруты:** `vishvananda/netlink` v1.1.0 (Linux), `ifconfig` (macOS)
 5. **Прокси:** `golang.org/x/net/proxy` (HTTP + SOCKS5)
 6. **Сборка:** всегда статическая — `CGO_ENABLED=0 go build`
 
@@ -45,10 +45,15 @@ internal/routes/            ← Управление маршрутами (netli
 - TLS опционален (сервер: `tls.enabled`, клиент: `use_tls`)
 - Пользователи сервера в конфиге (username/password)
 
-### TUN интерфейс (internal/tun/tun.go)
-- Создание TUN через syscall `ioctl TUNSETIFF` (без внешних зависимостей)
-- Настройка IPv4/IPv6 адресов
-- Функции AddRoute, AddRoute6, DeleteRoute (через exec ip)
+### TUN интерфейс (internal/tun/)
+- **tun.go** — общий код: Interface, Config, маршруты, утилиты
+- **tun_linux.go** — Linux реализация (`//go:build linux`)
+  - Создание через `/dev/net/tun` + `ioctl TUNSETIFF`
+  - Настройка через `ip` команды
+- **tun_darwin.go** — macOS реализация (`//go:build darwin`)
+  - Создание через `/dev/utun` + control-сокеты (`CTLIOCGINFO`, `connect`)
+  - Настройка через `ifconfig` команды
+- Общий интерфейс `fileInterface` для абстракции файловых операций
 - IsIPv6Packet() — определение версии пакета
 
 ### WebSocket транспорт (internal/ws/transport.go)
@@ -85,6 +90,11 @@ internal/routes/            ← Управление маршрутами (netli
 4. **IP not assigned** — клиент не получал IP
    - Клиент теперь парсит AUTH_SUCCESS payload
    - TUN пересоздаётся с назначенным IP (10.0.0.2)
+
+5. **macOS compilation** — `syscall.TUNSETIFF` не доступен на macOS
+   - TUN разделён на платформо-зависимые файлы с build tags
+   - Linux: `tun_linux.go` (TUNSETIFF), macOS: `tun_darwin.go` (utun)
+   - Кросс-компиляция: `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build`
 
 ## 🔄 Последовательность подключения
 
@@ -161,9 +171,10 @@ ping 10.0.0.1                                # терминал 3
 ## ⚠️ Важные ограничения
 
 1. **Root права** — TUN и маршруты требуют root/CAP_NET_ADMIN
-2. **Только Linux** — другие ОС не тестировались/ограничены
+2. **Поддерживаемые ОС** — Linux (полная поддержка), macOS (TUN через utun, маршруты через ifconfig)
 3. **Go 1.19** — зависимости совместимы с этой версией
 4. **TLS опционален** — можно использовать ws:// и wss://
+5. **Кросс-компиляция** — работает из коробки: `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build`
 
 ## 🛠 Команды для работы
 
@@ -192,4 +203,4 @@ sudo ./vpnclient -config client.yaml
 ---
 
 *Последнее обновление: 09 Апреля 2026*
-*TUN переведён на syscall (без внешних зависимостей), бинарники статические*
+*Кроссплатформенный TUN (Linux + macOS), платформо-зависимые файлы с build tags, бинарники статические*

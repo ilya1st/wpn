@@ -3,12 +3,11 @@ package tun
 import (
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
-	"runtime"
-	"syscall"
-	"unsafe"
 )
+
+// execCommand используется для вызова внешних команд (можно замокать в тестах)
+var execCommand = exec.Command
 
 // Config конфигурация TUN интерфейса
 type Config struct {
@@ -22,78 +21,28 @@ type Config struct {
 
 // Interface представляет TUN интерфейс
 type Interface struct {
-	fd     *os.File
+	fd     fileInterface
 	config Config
 }
 
-const (
-	tunDevice  = "/dev/net/tun"
-	ifNameSize = 16
-	IFF_TUN    = 0x0001
-	IFF_NO_PI  = 0x1000
-)
-
-// ifreq структура для ioctl TUNSETIFF
-type ifreq struct {
-	Name  [ifNameSize]byte
-	Flags uint16
-	_     [28]byte // padding до размера IFNAMSIZ + sizeof(short) + padding
+// fileInterface общий интерфейс для файлового дескриптора TUN
+type fileInterface interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
+	Name() string
 }
 
 // New создаёт новый TUN интерфейс
 func New(cfg Config) (*Interface, error) {
-	if runtime.GOOS != "linux" {
-		return nil, fmt.Errorf("unsupported OS: %s (gvisor TUN only supports Linux)", runtime.GOOS)
-	}
-
 	if cfg.MTU == 0 {
 		cfg.MTU = 1500
 	}
 
-	// Открываем TUN устройство
-	fd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	// Создаём TUN интерфейс (платформо-зависимая реализация)
+	file, actualName, err := newTUN(cfg.Name)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", tunDevice, err)
-	}
-
-	// Подготавливаем структуру ifreq
-	var ifr ifreq
-	ifr.Flags = IFF_TUN | IFF_NO_PI
-
-	// Копируем имя интерфейса
-	nameBytes := []byte(cfg.Name)
-	if len(nameBytes) >= ifNameSize {
-		nameBytes = nameBytes[:ifNameSize-1]
-	}
-	copy(ifr.Name[:], nameBytes)
-
-	// Вызываем ioctl TUNSETIFF
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(fd),
-		uintptr(syscall.TUNSETIFF),
-		uintptr(unsafe.Pointer(&ifr)),
-	)
-	if errno != 0 {
-		syscall.Close(fd)
-		return nil, fmt.Errorf("ioctl TUNSETIFF: %w", errno)
-	}
-
-	// Получаем реальное имя интерфейса (если cfg.Name было пустым)
-	actualName := string(ifr.Name[:])
-	// Убираем нулевые байты
-	for i, b := range actualName {
-		if b == 0 {
-			actualName = actualName[:i]
-			break
-		}
-	}
-
-	// Оборачиваем fd в os.File для удобного Read/Write
-	file := os.NewFile(uintptr(fd), actualName)
-	if file == nil {
-		syscall.Close(fd)
-		return nil, fmt.Errorf("failed to create file from fd")
+		return nil, err
 	}
 
 	tun := &Interface{
@@ -111,10 +60,6 @@ func New(cfg Config) (*Interface, error) {
 
 // Setup настраивает TUN интерфейс (требует root прав)
 func (t *Interface) Setup() error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-
 	// Настройка IPv4
 	if t.config.IP != "" && t.config.Subnet > 0 {
 		addr := fmt.Sprintf("%s/%d", t.config.IP, t.config.Subnet)
@@ -148,38 +93,22 @@ func (t *Interface) Setup() error {
 
 // configureAddress устанавливает IPv4 адрес
 func (t *Interface) configureAddress(addr string) error {
-	cmd := exec.Command("ip", "addr", "add", addr, "dev", t.Name())
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ip addr add: %s: %w", string(output), err)
-	}
-	return nil
+	return configureAddress(t.Name(), addr)
 }
 
 // configureAddress6 устанавливает IPv6 адрес
 func (t *Interface) configureAddress6(addr string) error {
-	cmd := exec.Command("ip", "-6", "addr", "add", addr, "dev", t.Name())
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ip -6 addr add: %s: %w", string(output), err)
-	}
-	return nil
+	return configureAddress6(t.Name(), addr)
 }
 
 // setMTU устанавливает MTU интерфейса
 func (t *Interface) setMTU(mtu int) error {
-	cmd := exec.Command("ip", "link", "set", "dev", t.Name(), "mtu", fmt.Sprintf("%d", mtu))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ip link set mtu: %s: %w", string(output), err)
-	}
-	return nil
+	return setMTU(t.Name(), mtu)
 }
 
 // setUp активирует интерфейс
 func (t *Interface) setUp() error {
-	cmd := exec.Command("ip", "link", "set", "dev", t.Name(), "up")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ip link set up: %s: %w", string(output), err)
-	}
-	return nil
+	return setUp(t.Name())
 }
 
 // Read читает пакет из TUN
