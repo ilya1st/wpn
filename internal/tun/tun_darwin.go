@@ -197,25 +197,62 @@ func setUp(name string) error {
 }
 
 // darwinFile реализация fileInterface для macOS
+// utun на macOS добавляет 4-байтовый Protocol Family заголовок:
+//   IPv4: 0x00000002 (AF_INET)
+//   IPv6: 0x0000001E (AF_INET6)
+// Мы strip/add этот заголовок чтобы обеспечить совместимость с Linux TUN (без заголовка)
 type darwinFile struct {
 	fd   int
 	name string
 }
 
+const (
+	utunHeaderLen = 4
+	protoIPv4     = 0x00000002
+	protoIPv6     = 0x0000001E
+)
+
 func (f *darwinFile) Read(b []byte) (int, error) {
-	n, err := syscall.Read(f.fd, b)
+	// Читаем в буфер с запасом под заголовок
+	hdrBuf := make([]byte, utunHeaderLen+len(b))
+	n, err := syscall.Read(f.fd, hdrBuf)
 	if err != nil {
 		return 0, err
 	}
-	return n, nil
+	if n < utunHeaderLen {
+		return 0, fmt.Errorf("utun: short read (%d bytes)", n)
+	}
+	// Копируем только IP пакет (без 4-байтового заголовка)
+	pktLen := n - utunHeaderLen
+	copy(b, hdrBuf[utunHeaderLen:n])
+	return pktLen, nil
 }
 
 func (f *darwinFile) Write(b []byte) (int, error) {
-	n, err := syscall.Write(f.fd, b)
+	// Определяем тип пакета по версии IP
+	var proto uint32
+	if len(b) > 0 && (b[0]>>4) == 6 {
+		proto = protoIPv6
+	} else {
+		proto = protoIPv4
+	}
+
+	// Создаём буфер с заголовком
+	hdrBuf := make([]byte, utunHeaderLen+len(b))
+	// Записываем заголовок в big-endian
+	hdrBuf[0] = 0
+	hdrBuf[1] = 0
+	hdrBuf[2] = uint8(proto >> 8)
+	hdrBuf[3] = uint8(proto)
+	// Копируем IP пакет
+	copy(hdrBuf[utunHeaderLen:], b)
+
+	n, err := syscall.Write(f.fd, hdrBuf)
 	if err != nil {
 		return 0, err
 	}
-	return n, nil
+	// Возвращаем длину записанных данных без заголовка
+	return n - utunHeaderLen, nil
 }
 
 func (f *darwinFile) Close() error {
