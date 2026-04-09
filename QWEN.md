@@ -90,6 +90,10 @@ gopkg.in/yaml.v3 v3.0.1                   # YAML конфигурация
 - **I/O timeout** — добавлен read deadline на сервере и клиенте
 - **IP not assigned** — клиент теперь получает IP из AUTH_SUCCESS payload
 - **macOS compilation** — TUN интерфейс разделён на платформо-зависимые файлы (build tags)
+- **macOS utun** — исправлено создание utun сокета через RawSyscall (AF_SYSTEM не поддерживается syscall.Socket)
+- **macOS sockaddr_ctl** — корректная структура: 32 байта, `[5]uint32` reserved, `ss_sysaddr = AF_SYS_CONTROL`
+- **macOS interface name** — всегда используется реальное имя (utun0/1/...), имя из конфига игнорируется
+- **macOS ifconfig inet** — добавлен destination адрес для point-to-point utun интерфейсов
 
 ## 🚀 Быстрый старт
 

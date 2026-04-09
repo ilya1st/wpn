@@ -95,6 +95,11 @@ internal/routes/            ← Управление маршрутами (netli
    - TUN разделён на платформо-зависимые файлы с build tags
    - Linux: `tun_linux.go` (TUNSETIFF), macOS: `tun_darwin.go` (utun)
    - Кросс-компиляция: `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build`
+6. **macOS utun исправления** — серия фиксов для корректной работы на macOS:
+   - Сокет через `RawSyscall(SYS_SOCKET, AF_SYSTEM=32, SOCK_DGRAM, SYSPROTO_CONTROL)`
+   - `sockaddr_ctl`: 32 байта, `[5]uint32` reserved, `ss_sysaddr = AF_SYS_CONTROL`
+   - Имя интерфейса: всегда реальное (`utun0/1/...`), имя из конфига игнорируется
+   - `ifconfig inet`: point-to-point формат `<local> <dest> netmask <mask>`
 
 ## 🔄 Последовательность подключения
 
