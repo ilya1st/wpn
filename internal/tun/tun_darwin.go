@@ -24,18 +24,27 @@ const (
 	_UTUN_OPT_IFNAME = 2
 	CTLIOCGINFO      = 0xc0644e03 // CTLIOCGINFO ioctl code
 	AF_SYSTEM        = 32
+	AF_SYS_CONTROL   = 2
 	SYSPROTO_CONTROL = 2
 	SOCK_DGRAM       = 2
 )
 
-// sockaddr_ctl структура для подключения к utun
+// sockaddr_ctl — структура для подключения к utun (macOS)
+// struct sockaddr_ctl {
+//     u_char      sc_len;       // 1
+//     u_char      sc_family;    // 1
+//     u_int16_t   ss_sysaddr;   // 2  (AF_SYS_CONTROL)
+//     u_int32_t   sc_id;        // 4  (controller ID)
+//     u_int32_t   sc_unit;      // 4  (unit number)
+//     u_int32_t   sc_reserved[5];// 20
+// }; // total: 32 bytes
 type sockaddrCtl struct {
 	scLen    uint8
 	scFamily uint8
-	scPort   uint16
+	scPort   uint16      // ss_sysaddr
 	scID     uint32
 	scUnit   uint32
-	scResv   [64]byte
+	scResv   [5]uint32   // 20 bytes
 }
 
 // newTUN создаёт новый utun интерфейс (macOS)
@@ -81,9 +90,9 @@ func newTUN(name string) (fileInterface, string, error) {
 
 	// Подключаемся к utun контроллеру
 	sc := sockaddrCtl{
-		scLen:    uint8(unsafe.Sizeof(sockaddrCtl{})), // 76
+		scLen:    uint8(unsafe.Sizeof(sockaddrCtl{})), // 32
 		scFamily: AF_SYSTEM,
-		scPort:   0, // 0 для utun
+		scPort:   AF_SYS_CONTROL, // ss_sysaddr, NOT 0
 		scID:     info.ID,
 		scUnit:   0, // 0 = автоматический выбор utun номер
 	}
