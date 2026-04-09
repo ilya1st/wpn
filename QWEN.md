@@ -82,6 +82,7 @@ gopkg.in/yaml.v3 v3.0.1                   # YAML конфигурация
 - [x] Синхронизация записи в WebSocket (sync.Mutex)
 - [x] Read deadline мониторинг соединения
 - [x] Тестирование через network namespaces
+- [x] Настраиваемый WebSocket path (server.path, client.ws_location)
 
 ## 🐛 Исправления
 

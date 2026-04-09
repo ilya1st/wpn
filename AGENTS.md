@@ -44,6 +44,7 @@ internal/routes/            ← Управление маршрутами (netli
 - Настраиваемые таймауты (аутентификация, keepalive, фрагментация)
 - TLS опционален (сервер: `tls.enabled`, клиент: `use_tls`)
 - Пользователи сервера в конфиге (username/password)
+- WebSocket path: `server.path` (сервер), `client.ws_location` (клиент)
 
 ### TUN интерфейс (internal/tun/)
 - **tun.go** — общий код: Interface, Config, маршруты, утилиты
@@ -107,6 +108,7 @@ internal/routes/            ← Управление маршрутами (netli
    - Сервер автоматически добавляет маршрут на подсеть `10.0.0.0/24`
    - Используется `tunIface.Name()` (`utunX`) а не `cfg.TUN.Name`
 8. **macOS пинги** — работают между сервером macOS и клиентом Linux
+9. **WebSocket path** — настраиваемый путь через `server.path` и `client.ws_location`
 
 ## 🔄 Последовательность подключения
 
