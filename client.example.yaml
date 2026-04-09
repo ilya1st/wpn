@@ -2,6 +2,7 @@ client:
   server: "vpn.example.com"
   port: 8443
   use_tls: false  # true для wss://, false для ws://
+  ws_location: "/ws"  # WebSocket путь (должен совпадать с server.path)
 
 auth:
   username: "user1"

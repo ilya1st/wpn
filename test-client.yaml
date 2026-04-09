@@ -2,6 +2,7 @@ client:
   server: "127.0.0.1"
   port: 8443
   use_tls: false
+  ws_location: "/ws"
 
 auth:
   username: "testuser"

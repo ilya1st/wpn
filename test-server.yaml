@@ -1,6 +1,7 @@
 server:
   listen: "0.0.0.0"
   port: 8443
+  path: "/ws"
   tls:
     enabled: false
 

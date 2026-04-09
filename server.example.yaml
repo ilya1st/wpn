@@ -1,6 +1,7 @@
 server:
   listen: "0.0.0.0"
   port: 8443
+  path: "/ws"  # WebSocket путь (пустой = корень "/")
   tls:
     enabled: false  # true для HTTPS (wss://), false для HTTP (ws://)
     cert: "/path/to/cert.pem"  # требуется если tls.enabled=true
