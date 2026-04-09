@@ -141,7 +141,7 @@ docker run --rm -it \
   --device /dev/net/tun \
   -v /home/iazarov/vpn:/vpn \
   -p 8443:8443 \
-  ubuntu:22.04 bash
+  bash@latest bash
 
 # Внутри контейнера
 /vpn/vpnservice -config /vpn/test-server.yaml
@@ -194,6 +194,7 @@ ping 10.0.0.1
 ---
 
 *Последнее обновление: 09 Апреля 2026*
+*TUN переведён на syscall (без внешних зависимостей), бинарники статические, Docker-тестирование*
 
 ## Qwen Added Memories
 - Задача на будущее: клиент при соединении по HTTPS должен маскироваться под реальные браузеры по TLS отпечаткам (fingerprinting) и поддерживать подмену TLS SNI
