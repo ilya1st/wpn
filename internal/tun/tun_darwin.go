@@ -149,11 +149,10 @@ func configureAddress(name, addr string) error {
 		return fmt.Errorf("parse CIDR: %w", err)
 	}
 
-	// Получаем адрес сети в формате x.x.x.x
-	dstIP := ipNet.IP.Mask(ipNet.Mask)
+	// На macOS просто задаём IP и netmask
+	mask := net.IP(ipNet.Mask).String()
 
-	// Используем ifconfig для установки адреса
-	cmd := execCommand("ifconfig", name, "inet", ip.String(), "netmask", net.IP(ipNet.Mask).String(), dstIP.String())
+	cmd := execCommand("ifconfig", name, "inet", ip.String(), "netmask", mask)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ifconfig inet: %s: %w", string(output), err)
 	}

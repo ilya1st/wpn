@@ -50,10 +50,8 @@ func New(cfg Config) (*Interface, error) {
 		config: cfg,
 	}
 
-	// Обновляем имя в конфиге (если оно было пустым)
-	if tun.config.Name == "" {
-		tun.config.Name = actualName
-	}
+	// Всегда используем реальное имя интерфейса (на macOS это utun0/1/...)
+	tun.config.Name = actualName
 
 	return tun, nil
 }
