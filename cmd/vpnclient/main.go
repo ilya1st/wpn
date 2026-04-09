@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/iazarov/vpn/internal/config"
-	"github.com/iazarov/vpn/internal/protocol"
-	"github.com/iazarov/vpn/internal/routes"
-	"github.com/iazarov/vpn/internal/tun"
-	"github.com/iazarov/vpn/internal/ws"
+	"github.com/ilya1st/wpn/internal/config"
+	"github.com/ilya1st/wpn/internal/protocol"
+	"github.com/ilya1st/wpn/internal/routes"
+	"github.com/ilya1st/wpn/internal/tun"
+	"github.com/ilya1st/wpn/internal/ws"
 )
 
 func main() {

@@ -1,4 +1,4 @@
-module github.com/iazarov/vpn
+module github.com/ilya1st/wpn
 
 go 1.19
 

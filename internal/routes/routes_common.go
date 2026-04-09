@@ -5,7 +5,7 @@ import (
 	"net"
 	"sort"
 
-	"github.com/iazarov/vpn/internal/config"
+	"github.com/ilya1st/wpn/internal/config"
 )
 
 // Route представляет маршрут
