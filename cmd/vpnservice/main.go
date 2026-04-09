@@ -2,7 +2,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -49,18 +51,34 @@ func main() {
 
 	// Настройка маршрутов сервера
 	routeManager := routes.NewManager(cfg.TUN.Name)
+
+	// Автоматически добавляем маршрут на подсеть сервера через TUN интерфейс
+	if cfg.TUN.IP != "" && cfg.TUN.Subnet > 0 {
+		subnet := fmt.Sprintf("%s/%d", cfg.TUN.IP, cfg.TUN.Subnet)
+		_, dst, err := net.ParseCIDR(subnet)
+		if err != nil {
+			log.Fatalf("Failed to parse subnet %s: %v", subnet, err)
+		}
+		log.Printf("Adding local subnet route: %s via %s", subnet, tunIface.Name())
+		routeManager.AddRoute(routes.Route{
+			Dst:    dst,
+			Metric: 0,
+		})
+	}
+
 	if len(cfg.Routes) > 0 {
 		serverRoutes, err := routes.ParseRoutesFromConfig(cfg.Routes, cfg.TUN.Name)
 		if err != nil {
 			log.Fatalf("Failed to parse server routes: %v", err)
 		}
 		routeManager.AddRoutes(serverRoutes)
-		
-		if err := routeManager.ApplyRoutes(); err != nil {
-			log.Printf("Warning: failed to apply server routes: %v", err)
-		} else {
-			log.Printf("Server routes applied: %d", len(serverRoutes))
-		}
+	}
+
+	// Применяем все маршруты (автодобавленные + из конфига)
+	if err := routeManager.ApplyRoutes(); err != nil {
+		log.Printf("Warning: failed to apply server routes: %v", err)
+	} else {
+		log.Printf("Server routes applied")
 	}
 
 	// Создание WebSocket сервера
