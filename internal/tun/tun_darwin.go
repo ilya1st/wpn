@@ -81,9 +81,9 @@ func newTUN(name string) (fileInterface, string, error) {
 
 	// Подключаемся к utun контроллеру
 	sc := sockaddrCtl{
-		scLen:    32,
+		scLen:    uint8(unsafe.Sizeof(sockaddrCtl{})), // 76
 		scFamily: AF_SYSTEM,
-		scPort:   SYSPROTO_CONTROL,
+		scPort:   0, // 0 для utun
 		scID:     info.ID,
 		scUnit:   0, // 0 = автоматический выбор utun номер
 	}
