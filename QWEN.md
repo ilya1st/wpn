@@ -85,6 +85,8 @@ gopkg.in/yaml.v3 v3.0.1                   # YAML конфигурация
 - [x] Настраиваемый WebSocket path (server.path, client.ws_location)
 - [x] TLS поддержка (wss://, self-signed сертификаты)
 - [x] allow_insecure — пропуск проверки сертификата на клиенте
+- [x] Сжатие пакетов (zlib, по пакетам, FlagCompressed)
+- [x] Переименовано: `timeouts` → `connection_settings`
 
 ## 🐛 Исправления
 
