@@ -24,9 +24,10 @@ type ServerConfig struct {
 
 // ClientConfig конфигурация WebSocket клиента
 type ClientConfig struct {
-	ServerURL string
-	Proxy     *ProxyConfig
-	TLS       bool
+	ServerURL        string
+	Proxy            *ProxyConfig
+	TLS              bool
+	InsecureSkipVerify bool
 }
 
 // ProxyConfig конфигурация прокси
@@ -131,7 +132,7 @@ func (c *Client) Connect() error {
 	// Настройка TLS
 	if c.config.TLS {
 		dialer.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: false,
+			InsecureSkipVerify: c.config.InsecureSkipVerify,
 		}
 	}
 

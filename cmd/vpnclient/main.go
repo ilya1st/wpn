@@ -55,9 +55,10 @@ func main() {
 	}
 
 	wsClient := ws.NewClient(ws.ClientConfig{
-		ServerURL: cfg.GetServerURL(),
-		Proxy:     proxyConfig,
-		TLS:       cfg.Client.UseTLS,
+		ServerURL:          cfg.GetServerURL(),
+		Proxy:              proxyConfig,
+		TLS:                cfg.Client.UseTLS,
+		InsecureSkipVerify: cfg.Client.AllowInsecure,
 	})
 
 	// Подключение к серверу с повторными попытками

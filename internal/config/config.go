@@ -65,10 +65,11 @@ type TUNSection struct {
 
 // ClientSection параметры клиента
 type ClientSection struct {
-	Server      string `yaml:"server"`
-	Port        int    `yaml:"port"`
-	UseTLS      bool   `yaml:"use_tls"`
-	WsLocation  string `yaml:"ws_location"`
+	Server        string `yaml:"server"`
+	Port          int    `yaml:"port"`
+	UseTLS        bool   `yaml:"use_tls"`
+	WsLocation    string `yaml:"ws_location"`
+	AllowInsecure bool   `yaml:"allow_insecure"`
 }
 
 // ClientAuthSection аутентификация клиента

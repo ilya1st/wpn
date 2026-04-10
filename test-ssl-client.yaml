@@ -1,0 +1,36 @@
+client:
+  server: "127.0.0.1"
+  port: 8443
+  use_tls: true
+  ws_location: "/ws"
+  allow_insecure: true  # игнорирует валидность сертификата (для тестов)
+
+auth:
+  username: "testuser"
+  password: "testpass123"
+  timeout: 10
+
+proxy:
+  enabled: false
+  type: "http"
+  address: ""
+  port: 0
+  username: ""
+  password: ""
+
+tun:
+  name: "vpnclient0"
+  ip: ""
+  subnet: 0
+
+#routes:
+#  - dst: "10.0.0.0/24"
+#    gw: ""
+#    metric: 50
+
+timeouts:
+  keepalive_interval: 30
+  keepalive_timeout: 90
+  fragment_timeout: 5
+  reconnect_delay: 5
+  max_reconnects: 3
