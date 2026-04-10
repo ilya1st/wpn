@@ -45,6 +45,8 @@ internal/routes/            ← Управление маршрутами (netli
 - TLS опционален (сервер: `tls.enabled`, клиент: `use_tls`)
 - Пользователи сервера в конфиге (username/password)
 - WebSocket path: `server.path` (сервер), `client.ws_location` (клиент)
+- TLS: `server.tls.enabled` + `cert/key`, `client.use_tls`, `client.allow_insecure`
+- Тестовые SSL конфиги: `test-ssl-server.yaml` / `test-ssl-client.yaml` с самоподписанным сертификатом (SAN: localhost, 127.0.0.1)
 
 ### TUN интерфейс (internal/tun/)
 - **tun.go** — общий код: Interface, Config, маршруты, утилиты
