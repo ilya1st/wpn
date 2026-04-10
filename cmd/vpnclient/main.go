@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ilya1st/wpn/internal/compression"
 	"github.com/ilya1st/wpn/internal/config"
 	"github.com/ilya1st/wpn/internal/protocol"
 	"github.com/ilya1st/wpn/internal/routes"
@@ -63,13 +64,13 @@ func main() {
 
 	// Подключение к серверу с повторными попытками
 	var conn *websocket.Conn
-	for attempt := 1; attempt <= cfg.Timeouts.MaxReconnects; attempt++ {
-		log.Printf("Connecting to server (attempt %d/%d)...", attempt, cfg.Timeouts.MaxReconnects)
+	for attempt := 1; attempt <= cfg.Connection.MaxReconnects; attempt++ {
+		log.Printf("Connecting to server (attempt %d/%d)...", attempt, cfg.Connection.MaxReconnects)
 		
 		if err := wsClient.Connect(); err != nil {
 			log.Printf("Connection failed: %v", err)
-			if attempt < cfg.Timeouts.MaxReconnects {
-				time.Sleep(time.Duration(cfg.Timeouts.ReconnectDelay) * time.Second)
+			if attempt < cfg.Connection.MaxReconnects {
+				time.Sleep(time.Duration(cfg.Connection.ReconnectDelay) * time.Second)
 				continue
 			}
 			log.Fatalf("Failed to connect after %d attempts: %v", attempt, err)
@@ -115,7 +116,7 @@ func main() {
 	var wsMutex sync.Mutex
 
 	// Запуск цикла обмена данными
-	go tunToWS(tunIface, conn, &wsMutex)
+	go tunToWS(tunIface, conn, &wsMutex, cfg)
 	go wsToTUN(tunIface, conn, routeManager, cfg, &wsMutex)
 	go keepalive(conn, cfg, &wsMutex)
 
@@ -215,7 +216,7 @@ func authenticate(conn *websocket.Conn, cfg *config.ClientConfig) (string, error
 }
 
 // tunToWS читает пакеты из TUN и отправляет в WebSocket
-func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex) {
+func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, cfg *config.ClientConfig) {
 	buf := make([]byte, 65535)
 	for {
 		n, err := tunIface.Read(buf)
@@ -226,6 +227,23 @@ func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex) {
 
 		packet := buf[:n]
 		isIPv6 := tun.IsIPv6Packet(packet)
+
+		// Сжатие если включено
+		if cfg.CompressionEnabled() {
+			compressed, err := compression.Compress(packet)
+			if err == nil && len(compressed) < len(packet) {
+				msg := protocol.CreateDataMessage(compressed, isIPv6)
+				msg.Flags |= protocol.FlagCompressed
+				mutex.Lock()
+				err = conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
+				mutex.Unlock()
+				if err != nil {
+					log.Printf("Failed to write to WebSocket: %v", err)
+					return
+				}
+				continue
+			}
+		}
 
 		msg := protocol.CreateDataMessage(packet, isIPv6)
 		mutex.Lock()
@@ -241,7 +259,7 @@ func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex) {
 // wsToTUN читает сообщения из WebSocket и записывает в TUN
 func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes.Manager, cfg *config.ClientConfig, mutex *sync.Mutex) {
 	// Устанавливаем начальный deadline
-	conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.Timeouts.KeepaliveTimeout) * time.Second))
+	conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.Connection.KeepaliveTimeout) * time.Second))
 	
 	for {
 		msgType, data, err := conn.ReadMessage()
@@ -251,7 +269,7 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes
 		}
 
 		// Обновляем deadline после получения любого сообщения
-		conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.Timeouts.KeepaliveTimeout) * time.Second))
+		conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.Connection.KeepaliveTimeout) * time.Second))
 
 		if msgType != websocket.BinaryMessage {
 			log.Printf("Expected binary message, got: %d", msgType)
@@ -266,7 +284,17 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes
 
 		switch msg.Type {
 		case protocol.MessageTypeData:
-			if _, err := tunIface.Write(msg.Payload); err != nil {
+			payload := msg.Payload
+			// Распаковка если пакет сжат
+			if msg.Flags&protocol.FlagCompressed != 0 {
+				decompressed, err := compression.Decompress(payload)
+				if err != nil {
+					log.Printf("Failed to decompress packet: %v", err)
+					continue
+				}
+				payload = decompressed
+			}
+			if _, err := tunIface.Write(payload); err != nil {
 				log.Printf("Failed to write to TUN: %v", err)
 			}
 
@@ -321,7 +349,7 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes
 
 // keepalive периодически отправляет keepalive сообщения
 func keepalive(conn *websocket.Conn, cfg *config.ClientConfig, mutex *sync.Mutex) {
-	ticker := time.NewTicker(time.Duration(cfg.Timeouts.KeepaliveInterval) * time.Second)
+	ticker := time.NewTicker(time.Duration(cfg.Connection.KeepaliveInterval) * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ilya1st/wpn/internal/compression"
 	"github.com/ilya1st/wpn/internal/config"
 	"github.com/ilya1st/wpn/internal/protocol"
 	"github.com/ilya1st/wpn/internal/routes"
@@ -211,7 +212,7 @@ func handleClient(conn *websocket.Conn, tunIface *tun.Interface, routeManager *r
 	var wsMutex sync.Mutex
 
 	// Запуск цикла обмена данными
-	go tunToWS(tunIface, conn, &wsMutex)
+	go tunToWS(tunIface, conn, &wsMutex, cfg)
 	go keepaliveMonitor(conn, cfg, &wsMutex)
 	wsToTUN(tunIface, conn, cfg, &wsMutex)
 }
@@ -251,7 +252,7 @@ func sendRoutesConfig(conn *websocket.Conn, routeEntries []config.RouteEntry) er
 }
 
 // tunToWS читает пакеты из TUN и отправляет в WebSocket
-func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex) {
+func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, cfg *config.ServerConfig) {
 	buf := make([]byte, 65535)
 	for {
 		n, err := tunIface.Read(buf)
@@ -262,6 +263,24 @@ func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex) {
 
 		packet := buf[:n]
 		isIPv6 := tun.IsIPv6Packet(packet)
+
+		// Сжатие если включено
+		if cfg.CompressionEnabled() {
+			compressed, err := compression.Compress(packet)
+			if err == nil && len(compressed) < len(packet) {
+				msg := protocol.CreateDataMessage(compressed, isIPv6)
+				msg.Flags |= protocol.FlagCompressed
+				mutex.Lock()
+				err = conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
+				mutex.Unlock()
+				if err != nil {
+					log.Printf("Failed to write to WebSocket: %v", err)
+					return
+				}
+				continue
+			}
+			// Если сжатие неэффективно — отправляем как есть
+		}
 
 		msg := protocol.CreateDataMessage(packet, isIPv6)
 		mutex.Lock()
@@ -302,7 +321,17 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, cfg *config.ServerCo
 
 		switch msg.Type {
 		case protocol.MessageTypeData:
-			if _, err := tunIface.Write(msg.Payload); err != nil {
+			payload := msg.Payload
+			// Распаковка если пакет сжат
+			if msg.Flags&protocol.FlagCompressed != 0 {
+				decompressed, err := compression.Decompress(payload)
+				if err != nil {
+					log.Printf("Failed to decompress packet: %v", err)
+					continue
+				}
+				payload = decompressed
+			}
+			if _, err := tunIface.Write(payload); err != nil {
 				log.Printf("Failed to write to TUN: %v", err)
 			}
 

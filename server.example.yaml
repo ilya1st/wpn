@@ -30,7 +30,8 @@ tun:
 #    gw: ""
 #    metric: 100
 
-timeouts:
+connection_settings:
   keepalive_interval: 30  # секунд
   keepalive_timeout: 90   # секунд
   fragment_timeout: 5     # секунд
+  compression: false      # сжатие пакетов (zlib)

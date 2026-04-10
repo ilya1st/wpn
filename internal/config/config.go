@@ -10,21 +10,21 @@ import (
 
 // ServerConfig конфигурация сервера
 type ServerConfig struct {
-	Server ServerSection `yaml:"server"`
-	Auth   AuthSection   `yaml:"auth"`
-	TUN    TUNSection    `yaml:"tun"`
-	Routes []RouteEntry  `yaml:"routes"`
-	Timeouts TimeoutsSection `yaml:"timeouts"`
+	Server   ServerSection       `yaml:"server"`
+	Auth     AuthSection         `yaml:"auth"`
+	TUN      TUNSection          `yaml:"tun"`
+	Routes   []RouteEntry        `yaml:"routes"`
+	Connection ServerConnectionSettings `yaml:"connection_settings"`
 }
 
 // ClientConfig конфигурация клиента
 type ClientConfig struct {
-	Client ClientSection `yaml:"client"`
-	Auth   ClientAuthSection `yaml:"auth"`
-	Proxy  ProxySection  `yaml:"proxy"`
-	TUN    ClientTUNSection `yaml:"tun"`
-	Routes []RouteEntry  `yaml:"routes"`
-	Timeouts ClientTimeoutsSection `yaml:"timeouts"`
+	Client     ClientSection        `yaml:"client"`
+	Auth       ClientAuthSection    `yaml:"auth"`
+	Proxy      ProxySection         `yaml:"proxy"`
+	TUN        ClientTUNSection     `yaml:"tun"`
+	Routes     []RouteEntry         `yaml:"routes"`
+	Connection ClientConnectionSettings `yaml:"connection_settings"`
 }
 
 // ServerSection общие параметры сервера
@@ -103,20 +103,22 @@ type RouteEntry struct {
 	Metric int    `yaml:"metric"`
 }
 
-// TimeoutsSection таймауты сервера
-type TimeoutsSection struct {
-	KeepaliveInterval int `yaml:"keepalive_interval"`
-	KeepaliveTimeout  int `yaml:"keepalive_timeout"`
-	FragmentTimeout   int `yaml:"fragment_timeout"`
+// ServerConnectionSettings настройки соединения сервера
+type ServerConnectionSettings struct {
+	KeepaliveInterval int  `yaml:"keepalive_interval"`
+	KeepaliveTimeout  int  `yaml:"keepalive_timeout"`
+	FragmentTimeout   int  `yaml:"fragment_timeout"`
+	Compression       bool `yaml:"compression"`
 }
 
-// ClientTimeoutsSection таймауты клиента
-type ClientTimeoutsSection struct {
-	KeepaliveInterval int `yaml:"keepalive_interval"`
-	KeepaliveTimeout  int `yaml:"keepalive_timeout"`
-	FragmentTimeout   int `yaml:"fragment_timeout"`
-	ReconnectDelay    int `yaml:"reconnect_delay"`
-	MaxReconnects     int `yaml:"max_reconnects"`
+// ClientConnectionSettings настройки соединения клиента
+type ClientConnectionSettings struct {
+	KeepaliveInterval int  `yaml:"keepalive_interval"`
+	KeepaliveTimeout  int  `yaml:"keepalive_timeout"`
+	FragmentTimeout   int  `yaml:"fragment_timeout"`
+	ReconnectDelay    int  `yaml:"reconnect_delay"`
+	MaxReconnects     int  `yaml:"max_reconnects"`
+	Compression       bool `yaml:"compression"`
 }
 
 // LoadServerConfig загружает конфигурацию сервера из файла
@@ -175,14 +177,14 @@ func (c *ServerConfig) setDefaults() {
 	if c.TUN.Subnet == 0 {
 		c.TUN.Subnet = 24
 	}
-	if c.Timeouts.KeepaliveInterval == 0 {
-		c.Timeouts.KeepaliveInterval = 30
+	if c.Connection.KeepaliveInterval == 0 {
+		c.Connection.KeepaliveInterval = 30
 	}
-	if c.Timeouts.KeepaliveTimeout == 0 {
-		c.Timeouts.KeepaliveTimeout = 90
+	if c.Connection.KeepaliveTimeout == 0 {
+		c.Connection.KeepaliveTimeout = 90
 	}
-	if c.Timeouts.FragmentTimeout == 0 {
-		c.Timeouts.FragmentTimeout = 5
+	if c.Connection.FragmentTimeout == 0 {
+		c.Connection.FragmentTimeout = 5
 	}
 }
 
@@ -197,20 +199,20 @@ func (c *ClientConfig) setDefaults() {
 	if c.TUN.Name == "" {
 		c.TUN.Name = "vpnclient0"
 	}
-	if c.Timeouts.KeepaliveInterval == 0 {
-		c.Timeouts.KeepaliveInterval = 30
+	if c.Connection.KeepaliveInterval == 0 {
+		c.Connection.KeepaliveInterval = 30
 	}
-	if c.Timeouts.KeepaliveTimeout == 0 {
-		c.Timeouts.KeepaliveTimeout = 90
+	if c.Connection.KeepaliveTimeout == 0 {
+		c.Connection.KeepaliveTimeout = 90
 	}
-	if c.Timeouts.FragmentTimeout == 0 {
-		c.Timeouts.FragmentTimeout = 5
+	if c.Connection.FragmentTimeout == 0 {
+		c.Connection.FragmentTimeout = 5
 	}
-	if c.Timeouts.ReconnectDelay == 0 {
-		c.Timeouts.ReconnectDelay = 5
+	if c.Connection.ReconnectDelay == 0 {
+		c.Connection.ReconnectDelay = 5
 	}
-	if c.Timeouts.MaxReconnects == 0 {
-		c.Timeouts.MaxReconnects = 10
+	if c.Connection.MaxReconnects == 0 {
+		c.Connection.MaxReconnects = 10
 	}
 }
 
@@ -221,17 +223,17 @@ func (c *ServerConfig) GetAuthTimeout() time.Duration {
 
 // GetKeepaliveInterval возвращает интервал keepalive как Duration
 func (c *ServerConfig) GetKeepaliveInterval() time.Duration {
-	return time.Duration(c.Timeouts.KeepaliveInterval) * time.Second
+	return time.Duration(c.Connection.KeepaliveInterval) * time.Second
 }
 
 // GetKeepaliveTimeout возвращает таймаут keepalive как Duration
 func (c *ServerConfig) GetKeepaliveTimeout() time.Duration {
-	return time.Duration(c.Timeouts.KeepaliveTimeout) * time.Second
+	return time.Duration(c.Connection.KeepaliveTimeout) * time.Second
 }
 
 // GetFragmentTimeout возвращает таймаут фрагментации как Duration
 func (c *ServerConfig) GetFragmentTimeout() time.Duration {
-	return time.Duration(c.Timeouts.FragmentTimeout) * time.Second
+	return time.Duration(c.Connection.FragmentTimeout) * time.Second
 }
 
 // GetAuthTimeout возвращает таймаут аутентификации клиента как Duration
@@ -250,4 +252,14 @@ func (c *ClientConfig) GetServerURL() string {
 		location = c.Client.WsLocation
 	}
 	return fmt.Sprintf("%s://%s:%d%s", protocol, c.Client.Server, c.Client.Port, location)
+}
+
+// CompressionEnabled возвращает true если сжатие включено
+func (c *ServerConfig) CompressionEnabled() bool {
+	return c.Connection.Compression
+}
+
+// CompressionEnabled возвращает true если сжатие включено
+func (c *ClientConfig) CompressionEnabled() bool {
+	return c.Connection.Compression
 }

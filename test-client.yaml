@@ -27,9 +27,10 @@ tun:
 #    gw: ""
 #    metric: 50
 
-timeouts:
+connection_settings:
   keepalive_interval: 30
   keepalive_timeout: 90
   fragment_timeout: 5
   reconnect_delay: 5
   max_reconnects: 3
+  compression: true
