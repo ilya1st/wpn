@@ -29,9 +29,12 @@ tun:
 #    metric: 50
 
 connection_settings:
-  keepalive_interval: 30
-  keepalive_timeout: 90
-  fragment_timeout: 5
-  reconnect_delay: 5
-  max_reconnects: 10
-  compression: false      # сжатие пакетов (должно совпадать с сервером)
+  keepalive_interval: 30    # интервал keepalive (секунды)
+  keepalive_timeout: 90     # таймаут keepalive (секунды)
+  fragment_timeout: 5       # таймаут фрагментации (секунды)
+  reconnect:
+    max_attempts: 0         # 0 = "вечно", >0 = N попыток
+    delay: 5                # базовая задержка (секунды)
+    delay_max: 60           # максимум задержки при exponential backoff
+    exponential: true       # нарастающая задержка: 5, 10, 20, 40, 60...
+  compression: false        # сжатие пакетов (должно совпадать с сервером)

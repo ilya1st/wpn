@@ -32,6 +32,9 @@ connection_settings:
   keepalive_interval: 30
   keepalive_timeout: 90
   fragment_timeout: 5
-  reconnect_delay: 5
-  max_reconnects: 3
+  reconnect:
+    max_attempts: 3
+    delay: 5
+    delay_max: 60
+    exponential: true
   compression: true
