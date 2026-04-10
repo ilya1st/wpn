@@ -30,7 +30,19 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Подготовка прокси конфигурации
+	// Создание TUN интерфейса
+	tunConfig := tun.Config{
+		Name: cfg.TUN.Name,
+		// IP будет установлен после аутентификации
+	}
+
+	tunIface, err := tun.New(tunConfig)
+	if err != nil {
+		log.Fatalf("Failed to create TUN interface: %v", err)
+	}
+	defer tunIface.Close()
+
+	// Создание WebSocket клиента
 	proxyConfig := (*ws.ProxyConfig)(nil)
 	if cfg.Proxy.Enabled {
 		proxyConfig = &ws.ProxyConfig{
@@ -43,53 +55,6 @@ func main() {
 		}
 	}
 
-	// Запуск с reconnect
-	runWithReconnect(cfg, proxyConfig)
-}
-
-// runWithReconnect выполняет подключение с автоматическим восстановлением
-func runWithReconnect(cfg *config.ClientConfig, proxyConfig *ws.ProxyConfig) {
-	attempt := 1
-
-	for cfg.Connection.Reconnect.ShouldReconnect(attempt) || attempt == 1 {
-		if attempt > 1 {
-			delay := cfg.Connection.Reconnect.GetDelay(attempt)
-			maxAttempts := cfg.Connection.Reconnect.MaxAttempts
-			if maxAttempts == 0 {
-				log.Printf("Reconnecting in %v (attempt %d)...", delay, attempt)
-			} else {
-				log.Printf("Reconnecting in %v (attempt %d/%d)...", delay, attempt, maxAttempts)
-			}
-			time.Sleep(delay)
-		}
-
-		err := runSession(cfg, proxyConfig)
-		if err == nil {
-			// Нормальное завершение (сигнал выхода)
-			return
-		}
-
-		log.Printf("Connection lost: %v", err)
-		attempt++
-	}
-
-	log.Printf("Max reconnect attempts reached (%d), exiting", cfg.Connection.Reconnect.MaxAttempts)
-}
-
-// runSession выполняет одну сессию подключения (от соединения до отключения)
-func runSession(cfg *config.ClientConfig, proxyConfig *ws.ProxyConfig) error {
-	// Создание TUN интерфейса (без IP — будет установлен после аутентификации)
-	tunConfig := tun.Config{
-		Name: cfg.TUN.Name,
-	}
-
-	tunIface, err := tun.New(tunConfig)
-	if err != nil {
-		return fmt.Errorf("create TUN interface: %w", err)
-	}
-	defer tunIface.Close()
-
-	// Создание WebSocket клиента
 	wsClient := ws.NewClient(ws.ClientConfig{
 		ServerURL:          cfg.GetServerURL(),
 		Proxy:              proxyConfig,
@@ -97,17 +62,28 @@ func runSession(cfg *config.ClientConfig, proxyConfig *ws.ProxyConfig) error {
 		InsecureSkipVerify: cfg.Client.AllowInsecure,
 	})
 
-	// Подключение
-	log.Printf("Connecting to %s...", cfg.GetServerURL())
-	if err := wsClient.Connect(); err != nil {
-		return fmt.Errorf("connect: %w", err)
+	// Подключение к серверу с повторными попытками
+	var conn *websocket.Conn
+	for attempt := 1; attempt <= cfg.Connection.MaxReconnects; attempt++ {
+		log.Printf("Connecting to server (attempt %d/%d)...", attempt, cfg.Connection.MaxReconnects)
+		
+		if err := wsClient.Connect(); err != nil {
+			log.Printf("Connection failed: %v", err)
+			if attempt < cfg.Connection.MaxReconnects {
+				time.Sleep(time.Duration(cfg.Connection.ReconnectDelay) * time.Second)
+				continue
+			}
+			log.Fatalf("Failed to connect after %d attempts: %v", attempt, err)
+		}
+
+		conn = wsClient.Connection()
+		break
 	}
-	conn := wsClient.Connection()
 
 	// Аутентификация
 	assignedIP, err := authenticate(conn, cfg)
 	if err != nil {
-		return fmt.Errorf("authenticate: %w", err)
+		log.Fatalf("Authentication failed: %v", err)
 	}
 
 	// Настройка TUN интерфейса с полученным IP
@@ -115,53 +91,49 @@ func runSession(cfg *config.ClientConfig, proxyConfig *ws.ProxyConfig) error {
 		tunConfig.IP = assignedIP
 		tunConfig.Subnet = 24
 	} else {
-		tunConfig.IP = "10.0.0.2"
+		tunConfig.IP = "10.0.0.2" // IP по умолчанию
 		tunConfig.Subnet = 24
 	}
 
-	// Пересоздаём TUN с IP
+	// Пересоздаём TUN с новым IP
 	tunIface.Close()
 	tunIface, err = tun.New(tunConfig)
 	if err != nil {
-		return fmt.Errorf("recreate TUN interface: %w", err)
+		log.Fatalf("Failed to create TUN interface: %v", err)
 	}
 	defer tunIface.Close()
 
 	if err := tunIface.Setup(); err != nil {
-		return fmt.Errorf("setup TUN interface: %w", err)
+		log.Fatalf("Failed to setup TUN interface: %v", err)
 	}
 
 	log.Printf("TUN interface %s ready with IP %s", tunIface.Name(), tunConfig.IP)
 
-	// Настройка маршрутов
+	// Настройка маршрутов клиента (имеют приоритет над серверными)
 	routeManager := routes.NewManager(cfg.TUN.Name)
 
 	// Мьютекс для синхронизации записей в WebSocket
 	var wsMutex sync.Mutex
 
-	// Запуск горутин обмена данными
+	// Запуск цикла обмена данными
 	go tunToWS(tunIface, conn, &wsMutex, cfg)
 	go wsToTUN(tunIface, conn, routeManager, cfg, &wsMutex)
 	go keepalive(conn, cfg, &wsMutex)
 
-	log.Println("VPN client connected. Press Ctrl+C to disconnect.")
-
 	// Ожидание сигнала
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
 
-	log.Printf("Received signal: %v", sig)
+	log.Println("VPN client connected. Press Ctrl+C to disconnect.")
+
+	<-sigCh
+	log.Println("Received shutdown signal")
 
 	// Отправка DISCONNECT
 	disconnectMsg := protocol.CreateDisconnectMessage("Client disconnect")
 	conn.WriteMessage(websocket.BinaryMessage, disconnectMsg.Serialize())
 
-	// Закрываем соединение (горутины завершатся)
-	conn.Close()
-
-	log.Println("Disconnected")
-	return nil
+	log.Println("Shutting down...")
 }
 
 // authenticate выполняет аутентификацию на сервере и возвращает назначенный IP

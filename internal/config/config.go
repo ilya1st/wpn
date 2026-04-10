@@ -113,19 +113,12 @@ type ServerConnectionSettings struct {
 
 // ClientConnectionSettings настройки соединения клиента
 type ClientConnectionSettings struct {
-	KeepaliveInterval int              `yaml:"keepalive_interval"`
-	KeepaliveTimeout  int              `yaml:"keepalive_timeout"`
-	FragmentTimeout   int              `yaml:"fragment_timeout"`
-	Reconnect         ReconnectSection `yaml:"reconnect"`
-	Compression       bool             `yaml:"compression"`
-}
-
-// ReconnectSection настройки восстановления соединения
-type ReconnectSection struct {
-	MaxAttempts int  `yaml:"max_attempts"` // 0 = "вечно", >0 = N попыток
-	Delay       int  `yaml:"delay"`        // базовая задержка (секунды)
-	DelayMax    int  `yaml:"delay_max"`    // максимум задержки
-	Exponential bool `yaml:"exponential"`  // экспоненциальный backoff
+	KeepaliveInterval int  `yaml:"keepalive_interval"`
+	KeepaliveTimeout  int  `yaml:"keepalive_timeout"`
+	FragmentTimeout   int  `yaml:"fragment_timeout"`
+	ReconnectDelay    int  `yaml:"reconnect_delay"`
+	MaxReconnects     int  `yaml:"max_reconnects"`
+	Compression       bool `yaml:"compression"`
 }
 
 // LoadServerConfig загружает конфигурацию сервера из файла
@@ -215,14 +208,11 @@ func (c *ClientConfig) setDefaults() {
 	if c.Connection.FragmentTimeout == 0 {
 		c.Connection.FragmentTimeout = 5
 	}
-	if c.Connection.Reconnect.Delay == 0 {
-		c.Connection.Reconnect.Delay = 5
+	if c.Connection.ReconnectDelay == 0 {
+		c.Connection.ReconnectDelay = 5
 	}
-	if c.Connection.Reconnect.DelayMax == 0 {
-		c.Connection.Reconnect.DelayMax = 60
-	}
-	if c.Connection.Reconnect.MaxAttempts == 0 {
-		c.Connection.Reconnect.MaxAttempts = 10
+	if c.Connection.MaxReconnects == 0 {
+		c.Connection.MaxReconnects = 10
 	}
 }
 
@@ -272,29 +262,4 @@ func (c *ServerConfig) CompressionEnabled() bool {
 // CompressionEnabled возвращает true если сжатие включено
 func (c *ClientConfig) CompressionEnabled() bool {
 	return c.Connection.Compression
-}
-
-// GetReconnectDelay возвращает текущую задержку с учётом backoff
-func (r *ReconnectSection) GetDelay(attempt int) time.Duration {
-	if !r.Exponential {
-		return time.Duration(r.Delay) * time.Second
-	}
-
-	delay := r.Delay
-	for i := 1; i < attempt; i++ {
-		delay *= 2
-		if r.DelayMax > 0 && delay > r.DelayMax {
-			delay = r.DelayMax
-			break
-		}
-	}
-	if r.DelayMax > 0 && delay > r.DelayMax {
-		delay = r.DelayMax
-	}
-	return time.Duration(delay) * time.Second
-}
-
-// ShouldReconnect возвращает true если нужно продолжать попытки
-func (r *ReconnectSection) ShouldReconnect(attempt int) bool {
-	return r.MaxAttempts == 0 || attempt < r.MaxAttempts
 }

@@ -48,8 +48,7 @@ internal/routes/            ← Управление маршрутами (netli
 - TLS: `server.tls.enabled` + `cert/key`, `client.use_tls`, `client.allow_insecure`
 - Тестовые SSL конфиги: `test-ssl-server.yaml` / `test-ssl-client.yaml` с самоподписанным сертификатом (SAN: localhost, 127.0.0.1)
 - **Сжатие**: `connection_settings.compression` (zlib, по пакетам, FlagCompressed)
-- **Reconnect**: `connection_settings.reconnect` (max_attempts: 0=вечно, delay, delay_max, exponential backoff)
-- **Архитектура клиента**: `runSession()` (одна сессия) → `runWithReconnect()` (цикл с backoff)
+- **Конфиг**: `timeouts` → `connection_settings` (ServerConnectionSettings, ClientConnectionSettings)
 
 ### TUN интерфейс (internal/tun/)
 - **tun.go** — общий код: Interface, Config, маршруты, утилиты
