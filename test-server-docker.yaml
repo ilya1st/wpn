@@ -1,0 +1,32 @@
+server:
+  listen: "0.0.0.0"
+  port: 8443
+  path: "/ws"
+  tls:
+    enabled: false
+
+auth:
+  timeout: 10
+  users:
+    - username: "client1"
+      password: "testpass123"
+    - username: "client2"
+      password: "testpass456"
+
+tun:
+  name: "vpnsrv0"
+  ip: "10.0.0.1"
+  subnet: 24
+  ip6: ""
+  subnet6: 0
+
+routes:
+  - dst: "10.0.0.0/24"
+    gw: ""
+    metric: 100
+
+connection_settings:
+  keepalive_interval: 30
+  keepalive_timeout: 90
+  fragment_timeout: 5
+  compression: true

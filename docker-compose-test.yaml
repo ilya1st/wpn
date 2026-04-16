@@ -1,0 +1,88 @@
+# docker-compose-test.yaml — тестирование VPN через Docker Compose
+#
+# Поднимает сервер и 2 клиента в изолированных контейнерах.
+# Бинари и конфиги пробрасываются через volume (текущий каталог).
+# Перед запуском собрать: CGO_ENABLED=0 go build -o vpnservice ./cmd/vpnservice && CGO_ENABLED=0 go build -o vpnclient ./cmd/vpnclient
+#
+# Запуск:  docker compose -f docker-compose-test.yaml up -d
+# Остановка: docker compose -f docker-compose-test.yaml down
+#
+# Проверки через docker exec:
+#   docker exec vpn-server tcpdump -i vpnsrv0 -n
+#   docker exec vpn-client-1 tcpdump -i vpnclient0 -n
+#   docker exec vpn-client-1 ping 10.0.0.1 -c 5
+#   docker exec vpn-client-2 ping 10.0.0.1 -c 5
+
+version: "3.8"
+
+networks:
+  vpn-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+services:
+  vpn-server:
+    build: .
+    container_name: vpn-server
+    hostname: vpn-server
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - .:/vpn
+    networks:
+      vpn-net:
+        ipv4_address: 172.30.0.10
+    command: >
+      sh -c "
+        /vpn/vpnservice -config /vpn/test-server-docker.yaml
+      "
+    stdin_open: true
+    tty: true
+
+  vpn-client-1:
+    build: .
+    container_name: vpn-client-1
+    hostname: vpn-client-1
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - .:/vpn
+    networks:
+      vpn-net:
+        ipv4_address: 172.30.0.20
+    depends_on:
+      - vpn-server
+    command: >
+      sh -c "
+        /vpn/vpnclient -config /vpn/test-client1-docker.yaml
+      "
+    stdin_open: true
+    tty: true
+
+  vpn-client-2:
+    build: .
+    container_name: vpn-client-2
+    hostname: vpn-client-2
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - .:/vpn
+    networks:
+      vpn-net:
+        ipv4_address: 172.30.0.21
+    depends_on:
+      - vpn-server
+    command: >
+      sh -c "
+        /vpn/vpnclient -config /vpn/test-client2-docker.yaml
+      "
+    stdin_open: true
+    tty: true

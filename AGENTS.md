@@ -35,7 +35,7 @@ internal/routes/            ← Управление маршрутами (netli
 - Типы: DATA (0x01), CONTROL (0x02), KEEPALIVE (0x03), FRAGMENT (0x04)
 - Control подтипы: AUTH_*, ROUTES_*, STATISTICS, ERROR, DISCONNECT
 - Сериализация/десериализация сообщений
-- Фрагментация для пакетов >65KB
+- **Фрагментация**: `CreateFragmentMessage` и `ParseFragmentHeader` есть, но НЕ вызываются в cmd/ — механизм разбиения/сборки НЕ реализован. `config.fragment_timeout` парсится но не используется
 - ParseAuthResponsePayload — исправлена формула проверки длины
 - ParseAuthSuccessPayload — парсинг назначенного IP
 
@@ -73,8 +73,11 @@ internal/routes/            ← Управление маршрутами (netli
 - Применение через netlink (Linux)
 
 ### Тестирование
-- test-netns.sh — скрипт для тестирования через network namespaces
-- Полная изоляция сервера и клиента в разных сетевых пространствах
+
+- test-docker.sh — скрипт для тестирования через Docker Compose (рекомендуемый)
+  - Поднимает сервер + 2 клиента в изолированных контейнерах
+  - Каждый контейнер имеет свой network namespace
+  - Поддержка tcpdump, ping через `docker exec -it`
 
 ## 🐛 Исправления
 
@@ -130,53 +133,38 @@ Client                          Server
 
 ## 📝 Следующие задачи (из QWEN.md)
 
-- [ ] Добавление сжатия (флаг COMPRESSED)
+- [ ] Реализовать фрагментацию пакетов >65KB (разбиение при записи, сборка при чтении, assembler с таймером)
+- [ ] Восстановление соединения клиентом при разрыве (автоматический reconnect с переподключением TUN и маршрутов)
+- [ ] Graceful shutdown сервера (контекст + http.Server.Shutdown)
 - [ ] Unit тесты (protocol, config, routes)
 - [ ] Логирование и метрики (Prometheus)
 - [ ] Systemd unit файлы
-- [ ] Docker контейнеризация
+- [ ] Docker контейнеризация (production)
 - [ ] Документация по развёртыванию
 - [ ] Интеграционные тесты
 
 ## 🧪 Тестирование
 
-### Docker-тестирование (рекомендуемый способ)
-
-Самый простой способ — запустить сервер в Docker контейнере, клиент на хосте (или наоборот):
+### Docker Compose (рекомендуемый способ)
 
 ```bash
-# 1. Собрать статические бинарники
-CGO_ENABLED=0 go build -o vpnservice ./cmd/vpnservice
-CGO_ENABLED=0 go build -o vpnclient ./cmd/vpnclient
+# 1. Собрать и поднять сервер + 2 клиента
+./test-docker.sh up
 
-# 2. Запустить контейнер с пробросом порта
-docker run --rm -it \
-  --cap-add NET_ADMIN \
-  --device /dev/net/tun \
-  -v /home/iazarov/vpn:/vpn \
-  -p 8443:8443 \
-  bash bash
+# 2. Автоматический тест с пингами и tcpdump
+./test-docker.sh test
 
-# 3. Внутри контейнера — сервер
-/vpn/vpnservice -config /vpn/test-server.yaml
+# 3. Остановка
+./test-docker.sh down
 
-# 4. На хосте (или в другой консоли контейнера) — клиент
-sudo /vpn/vpnclient -config /vpn/test-client.yaml
-
-# 5. В третьей консоли — проверка
-ping -I vpnclient0 10.0.0.1
+# Ручные проверки (интерактивный режим, обязательно -it):
+docker exec -it vpn-server     tcpdump -i vpnsrv0 -n
+docker exec -it vpn-client-1   tcpdump -i vpnclient0 -n
+docker exec -it vpn-client-1   ping -c 5 10.0.0.1
+docker exec -it vpn-client-2   ping -c 5 10.0.0.1
 ```
 
-**Почему работает:** сервер слушит `0.0.0.0:8443`, Docker пробрасывает порт, клиент подключается через `localhost:8443`.
-
-### Автоматический тест через network namespaces
-
-```bash
-sudo ./test-netns.sh
-
-# Очистка
-sudo ./test-netns.sh clean
-```
+**Почему работает:** все контейнеры в одной Docker-сети `vpn-net` (172.30.0.0/16), сервер слушит `0.0.0.0:8443`, клиенты подключаются к `172.30.0.10`.
 
 ### Ручной тест (одна машина, разные терминалы)
 

@@ -1,0 +1,36 @@
+client:
+  server: "172.30.0.10"
+  port: 8443
+  use_tls: false
+  ws_location: "/ws"
+
+auth:
+  username: "client2"
+  password: "testpass456"
+  timeout: 10
+
+proxy:
+  enabled: false
+  type: "http"
+  address: ""
+  port: 0
+  username: ""
+  password: ""
+
+tun:
+  name: "vpnclient0"
+  ip: ""
+  subnet: 0
+
+routes:
+  - dst: "10.0.0.0/24"
+    gw: ""
+    metric: 50
+
+connection_settings:
+  keepalive_interval: 30
+  keepalive_timeout: 90
+  fragment_timeout: 5
+  reconnect_delay: 5
+  max_reconnects: 3
+  compression: true
