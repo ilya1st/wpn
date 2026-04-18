@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/ilya1st/wpn/internal/compression"
 	"github.com/ilya1st/wpn/internal/config"
+	"github.com/ilya1st/wpn/internal/fragment"
 	"github.com/ilya1st/wpn/internal/protocol"
 	"github.com/ilya1st/wpn/internal/routes"
 	"github.com/ilya1st/wpn/internal/tun"
@@ -115,9 +116,16 @@ func main() {
 	// Мьютекс для синхронизации записей в WebSocket
 	var wsMutex sync.Mutex
 
+	// Фрагментация
+	frag := fragment.NewFragmenter()
+	assembler := fragment.NewAssembler(cfg.GetFragmentTimeout(), func(fragmentID uint32) {
+		log.Printf("Fragment assembly timeout for ID=%d", fragmentID)
+	})
+	defer assembler.Cleanup()
+
 	// Запуск цикла обмена данными
-	go tunToWS(tunIface, conn, &wsMutex, cfg)
-	go wsToTUN(tunIface, conn, routeManager, cfg, &wsMutex)
+	go tunToWS(tunIface, conn, &wsMutex, cfg, frag)
+	go wsToTUN(tunIface, conn, routeManager, cfg, &wsMutex, assembler)
 	go keepalive(conn, cfg, &wsMutex)
 
 	// Ожидание сигнала
@@ -216,7 +224,7 @@ func authenticate(conn *websocket.Conn, cfg *config.ClientConfig) (string, error
 }
 
 // tunToWS читает пакеты из TUN и отправляет в WebSocket
-func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, cfg *config.ClientConfig) {
+func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, cfg *config.ClientConfig, frag *fragment.Fragmenter) {
 	buf := make([]byte, 65535)
 	for {
 		n, err := tunIface.Read(buf)
@@ -227,6 +235,21 @@ func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, c
 
 		packet := buf[:n]
 		isIPv6 := tun.IsIPv6Packet(packet)
+
+		// Проверяем, нужно ли разбивать на фрагменты
+		if frag.NeedsFragment(len(packet)) {
+			fragMsgs := frag.Fragment(packet, isIPv6)
+			for _, msg := range fragMsgs {
+				mutex.Lock()
+				err = conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
+				mutex.Unlock()
+				if err != nil {
+					log.Printf("Failed to write fragment to WebSocket: %v", err)
+					return
+				}
+			}
+			continue
+		}
 
 		// Сжатие если включено
 		if cfg.CompressionEnabled() {
@@ -257,10 +280,10 @@ func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, c
 }
 
 // wsToTUN читает сообщения из WebSocket и записывает в TUN
-func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes.Manager, cfg *config.ClientConfig, mutex *sync.Mutex) {
+func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes.Manager, cfg *config.ClientConfig, mutex *sync.Mutex, assembler *fragment.Assembler) {
 	// Устанавливаем начальный deadline
 	conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.Connection.KeepaliveTimeout) * time.Second))
-	
+
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
@@ -298,6 +321,26 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes
 				log.Printf("Failed to write to TUN: %v", err)
 			}
 
+		case protocol.MessageTypeFragment:
+			// Сборка фрагментов
+			packet, isIPv6, complete := assembler.HandleFragment(msg)
+			if complete {
+				payload := packet
+				if msg.Flags&protocol.FlagCompressed != 0 {
+					decompressed, err := compression.Decompress(payload)
+					if err != nil {
+						log.Printf("Failed to decompress assembled packet: %v", err)
+						continue
+					}
+					payload = decompressed
+				}
+				if _, err := tunIface.Write(payload); err != nil {
+					log.Printf("Failed to write assembled packet to TUN: %v", err)
+				} else {
+					log.Printf("Assembled fragment: %d bytes (IPv6=%v)", len(payload), isIPv6)
+				}
+			}
+
 		case protocol.MessageTypeControl:
 			controlType, _ := msg.GetControlType()
 			switch controlType {
@@ -308,18 +351,18 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes
 					log.Printf("Failed to parse server routes: %v", err)
 					continue
 				}
-				
+
 				// Парсим клиентские маршруты
 				clientRoutes, err := routes.ParseRoutesFromConfig(cfg.Routes, cfg.TUN.Name)
 				if err != nil {
 					log.Printf("Failed to parse client routes: %v", err)
 					continue
 				}
-				
+
 				// Объединяем (клиентские имеют приоритет)
 				allRoutes := routes.MergeWithServerRoutes(clientRoutes, serverRoutes)
 				routeManager.AddRoutes(allRoutes)
-				
+
 				if err := routeManager.ApplyRoutes(); err != nil {
 					log.Printf("Failed to apply routes: %v", err)
 				} else {

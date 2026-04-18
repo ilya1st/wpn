@@ -236,6 +236,11 @@ func (c *ServerConfig) GetFragmentTimeout() time.Duration {
 	return time.Duration(c.Connection.FragmentTimeout) * time.Second
 }
 
+// GetFragmentTimeout возвращает таймаут фрагментации как Duration
+func (c *ClientConfig) GetFragmentTimeout() time.Duration {
+	return time.Duration(c.Connection.FragmentTimeout) * time.Second
+}
+
 // GetAuthTimeout возвращает таймаут аутентификации клиента как Duration
 func (c *ClientConfig) GetAuthTimeout() time.Duration {
 	return time.Duration(c.Auth.Timeout) * time.Second
