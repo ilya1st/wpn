@@ -61,6 +61,7 @@ type TUNSection struct {
 	Subnet  int    `yaml:"subnet"`
 	IP6     string `yaml:"ip6"`
 	Subnet6 int    `yaml:"subnet6"`
+	MTU     int    `yaml:"mtu"`
 }
 
 // ClientSection параметры клиента
@@ -94,6 +95,7 @@ type ClientTUNSection struct {
 	Name   string `yaml:"name"`
 	IP     string `yaml:"ip"`
 	Subnet int    `yaml:"subnet"`
+	MTU    int    `yaml:"mtu"`
 }
 
 // RouteEntry запись маршрута

@@ -38,6 +38,7 @@ func main() {
 		Subnet:  cfg.TUN.Subnet,
 		IP6:     cfg.TUN.IP6,
 		Subnet6: cfg.TUN.Subnet6,
+		MTU:     cfg.TUN.MTU,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create TUN interface: %v", err)
@@ -307,10 +308,10 @@ func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, c
 
 		msg := protocol.CreateDataMessage(packet, isIPv6)
 		mutex.Lock()
-		err = conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
+		writeErr := conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
 		mutex.Unlock()
-		if err != nil {
-			log.Printf("Failed to write to WebSocket: %v", err)
+		if writeErr != nil {
+			log.Printf("Failed to write to WebSocket: %v", writeErr)
 			return
 		}
 	}
@@ -380,11 +381,8 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, cfg *config.ServerCo
 			}
 
 		case protocol.MessageTypeKeepalive:
-			// Ответ keepalive
-			keepalive := protocol.CreateKeepaliveMessage()
-			mutex.Lock()
-			conn.WriteMessage(websocket.BinaryMessage, keepalive.Serialize())
-			mutex.Unlock()
+			// Игнорируем — keepaliveMonitor уже отправляет keepalive
+			// Ответ не нужен, чтобы избежать бесконечного цикла
 
 		default:
 			log.Printf("Unknown message type: 0x%02x", msg.Type)

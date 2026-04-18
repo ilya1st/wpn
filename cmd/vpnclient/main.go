@@ -34,6 +34,7 @@ func main() {
 	// Создание TUN интерфейса
 	tunConfig := tun.Config{
 		Name: cfg.TUN.Name,
+		MTU:  cfg.TUN.MTU,
 		// IP будет установлен после аутентификации
 	}
 
@@ -378,11 +379,8 @@ func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, routeManager *routes
 			}
 
 		case protocol.MessageTypeKeepalive:
-			// Ответ keepalive
-			keepalive := protocol.CreateKeepaliveMessage()
-			mutex.Lock()
-			conn.WriteMessage(websocket.BinaryMessage, keepalive.Serialize())
-			mutex.Unlock()
+			// Игнорируем — keepalive goroutine уже отправляет keepalive
+			// Ответ не нужен, чтобы избежать бесконечного цикла
 
 		default:
 			log.Printf("Unknown message type: 0x%02x", msg.Type)

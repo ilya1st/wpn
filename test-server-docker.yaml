@@ -19,6 +19,7 @@ tun:
   subnet: 24
   ip6: ""
   subnet6: 0
+  mtu: 15000
 
 routes:
   - dst: "10.0.0.0/24"
@@ -29,4 +30,4 @@ connection_settings:
   keepalive_interval: 30
   keepalive_timeout: 90
   fragment_timeout: 5
-  compression: true
+  compression: false

@@ -21,6 +21,7 @@ tun:
   name: "vpnclient0"
   ip: ""
   subnet: 0
+  mtu: 15000
 
 routes:
   - dst: "10.0.0.0/24"
@@ -33,4 +34,4 @@ connection_settings:
   fragment_timeout: 5
   reconnect_delay: 5
   max_reconnects: 3
-  compression: true
+  compression: false
