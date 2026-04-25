@@ -3,6 +3,7 @@ module github.com/ilya1st/wpn
 go 1.19
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/vishvananda/netlink v1.1.0
 	golang.org/x/net v0.20.0

@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -17,8 +16,9 @@ import (
 	"github.com/ilya1st/wpn/internal/fragment"
 	"github.com/ilya1st/wpn/internal/protocol"
 	"github.com/ilya1st/wpn/internal/routes"
+	"github.com/ilya1st/wpn/internal/session"
 	"github.com/ilya1st/wpn/internal/tun"
-	"github.com/ilya1st/wpn/internal/ws"
+	wstransport "github.com/ilya1st/wpn/internal/ws"
 )
 
 func main() {
@@ -45,18 +45,15 @@ func main() {
 	}
 	defer tunIface.Close()
 
-	// Настройка TUN интерфейса
 	if err := tunIface.Setup(); err != nil {
 		log.Fatalf("Failed to setup TUN interface: %v", err)
 	}
 
 	log.Printf("TUN interface %s created", tunIface.Name())
 
-	// Настройка маршрутов сервера
-	// Используем реальное имя интерфейса (на macOS это utun0/1/... а не из конфига)
+	// Маршруты сервера
 	routeManager := routes.NewManager(tunIface.Name())
 
-	// Автоматически добавляем маршрут на подсеть сервера через TUN интерфейс
 	if cfg.TUN.IP != "" && cfg.TUN.Subnet > 0 {
 		subnet := fmt.Sprintf("%s/%d", cfg.TUN.IP, cfg.TUN.Subnet)
 		_, dst, err := net.ParseCIDR(subnet)
@@ -64,10 +61,7 @@ func main() {
 			log.Fatalf("Failed to parse subnet %s: %v", subnet, err)
 		}
 		log.Printf("Adding local subnet route: %s via %s", subnet, tunIface.Name())
-		routeManager.AddRoute(routes.Route{
-			Dst:    dst,
-			Metric: 0,
-		})
+		routeManager.AddRoute(routes.Route{Dst: dst, Metric: 0})
 	}
 
 	if len(cfg.Routes) > 0 {
@@ -78,15 +72,35 @@ func main() {
 		routeManager.AddRoutes(serverRoutes)
 	}
 
-	// Применяем все маршруты (автодобавленные + из конфига)
 	if err := routeManager.ApplyRoutes(); err != nil {
 		log.Printf("Warning: failed to apply server routes: %v", err)
 	} else {
 		log.Printf("Server routes applied")
 	}
 
-	// Создание WebSocket сервера
-	wsServer := ws.NewServer(ws.ServerConfig{
+	// Реестр сессий и пулы адресов
+	registry := session.NewRegistry()
+
+	if cfg.TUN.IP != "" && cfg.TUN.Subnet > 0 {
+		_, ip4Net, err := net.ParseCIDR(fmt.Sprintf("%s/%d", cfg.TUN.IP, cfg.TUN.Subnet))
+		if err != nil {
+			log.Fatalf("Failed to parse IPv4 subnet: %v", err)
+		}
+		registry.SetIPv4Pool(session.NewIPPool(ip4Net))
+		log.Printf("IPv4 pool created: %s", ip4Net)
+	}
+
+	if cfg.TUN.IP6 != "" && cfg.TUN.Subnet6 > 0 {
+		_, ip6Net, err := net.ParseCIDR(fmt.Sprintf("%s/%d", cfg.TUN.IP6, cfg.TUN.Subnet6))
+		if err != nil {
+			log.Fatalf("Failed to parse IPv6 subnet: %v", err)
+		}
+		registry.SetIPv6Pool(session.NewIPPool(ip6Net))
+		log.Printf("IPv6 pool created: %s", ip6Net)
+	}
+
+	// WebSocket сервер
+	wsServer := wstransport.NewServer(wstransport.ServerConfig{
 		Listen: cfg.Server.Listen,
 		Port:   cfg.Server.Port,
 		Path:   cfg.Server.Path,
@@ -95,18 +109,19 @@ func main() {
 		Key:    cfg.Server.TLS.Key,
 	})
 
-	// Запуск сервера с обработчиком подключений
 	errCh := make(chan error, 1)
 	go func() {
 		err := wsServer.Start(func(conn *websocket.Conn) {
-			handleClient(conn, tunIface, routeManager, cfg)
+			handleClient(conn, tunIface, routeManager, registry, cfg)
 		})
 		if err != nil {
 			errCh <- err
 		}
 	}()
 
-	// Ожидание сигнала
+	// Мониторинг мёртвых сессий
+	go sessionCleanup(registry, cfg)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -120,17 +135,24 @@ func main() {
 	}
 
 	log.Println("Shutting down...")
+	for _, s := range registry.ActiveSessions() {
+		s.Lock()
+		if s.WSConn != nil {
+			s.WSConn.Close()
+		}
+		s.Unlock()
+	}
 }
 
-// handleClient обрабатывает подключение клиента
-func handleClient(conn *websocket.Conn, tunIface *tun.Interface, routeManager *routes.Manager, cfg *config.ServerConfig) {
-	clientIP := conn.RemoteAddr().String()
-	log.Printf("Client connected: %s", clientIP)
+// handleClient обрабатывает подключение одного клиента
+func handleClient(conn *websocket.Conn, tunIface *tun.Interface, _ *routes.Manager, registry *session.Registry, cfg *config.ServerConfig) {
+	clientAddr := conn.RemoteAddr().String()
+	log.Printf("Client connected: %s", clientAddr)
 
-	// Отправка AUTH_CHALLENGE
+	// AUTH_CHALLENGE
 	authChallenge := protocol.CreateControlMessage(protocol.ControlTypeAuthChallenge, []byte{})
 	if err := conn.WriteMessage(websocket.BinaryMessage, authChallenge.Serialize()); err != nil {
-		log.Printf("Failed to send auth challenge to %s: %v", clientIP, err)
+		log.Printf("Failed to send auth challenge to %s: %v", clientAddr, err)
 		return
 	}
 
@@ -138,10 +160,9 @@ func handleClient(conn *websocket.Conn, tunIface *tun.Interface, routeManager *r
 	conn.SetReadDeadline(time.Now().Add(cfg.GetAuthTimeout()))
 	msgType, data, err := conn.ReadMessage()
 	if err != nil {
-		log.Printf("Failed to read auth response from %s: %v", clientIP, err)
+		log.Printf("Failed to read auth response from %s: %v", clientAddr, err)
 		return
 	}
-
 	if msgType != websocket.BinaryMessage {
 		log.Printf("Expected binary message, got: %d", msgType)
 		return
@@ -152,7 +173,6 @@ func handleClient(conn *websocket.Conn, tunIface *tun.Interface, routeManager *r
 		log.Printf("Failed to deserialize message: %v", err)
 		return
 	}
-
 	if msg.Type != protocol.MessageTypeControl {
 		log.Printf("Expected control message, got: 0x%02x", msg.Type)
 		return
@@ -163,80 +183,115 @@ func handleClient(conn *websocket.Conn, tunIface *tun.Interface, routeManager *r
 		log.Printf("Failed to get control type: %v", err)
 		return
 	}
-
 	if controlType != protocol.ControlTypeAuthResponse {
 		log.Printf("Expected auth response, got: 0x%02x", controlType)
 		return
 	}
 
-	// Парсинг учётных данных
 	payload, err := msg.GetControlPayload()
 	if err != nil {
 		log.Printf("Failed to get control payload: %v", err)
 		return
 	}
-	log.Printf("Auth payload received: %d bytes: %v", len(payload), payload)
 	username, password, err := protocol.ParseAuthResponsePayload(payload)
 	if err != nil {
-		log.Printf("Failed to parse auth payload: %v, raw: %v", err, payload)
+		log.Printf("Failed to parse auth payload: %v", err)
 		return
 	}
-	log.Printf("Parsed credentials: username=%s, password=%s", username, password)
 
 	// Проверка авторизации
-	if !authenticate(username, password, cfg) {
-		log.Printf("Authentication failed for user %s from %s", username, clientIP)
-		failureMsg := protocol.CreateControlMessage(protocol.ControlTypeAuthFailure, 
-			[]byte("Invalid credentials"))
+	userEntry := findUser(username, password, cfg)
+	if userEntry == nil {
+		log.Printf("Authentication failed for user %s from %s", username, clientAddr)
+		failureMsg := protocol.CreateControlMessage(protocol.ControlTypeAuthFailure, []byte("Invalid credentials"))
 		conn.WriteMessage(websocket.BinaryMessage, failureMsg.Serialize())
 		return
 	}
 
-	log.Printf("Client %s authenticated as %s", clientIP, username)
+	log.Printf("Client %s authenticated as %s", clientAddr, username)
 
-	// Отправка AUTH_SUCCESS
-	authSuccess := protocol.CreateControlMessage(protocol.ControlTypeAuthSuccess,
-		protocol.CreateAuthSuccessPayload([]byte{10, 0, 0, 2}, []byte{10, 0, 0, 1}, 24))
-	if err := conn.WriteMessage(websocket.BinaryMessage, authSuccess.Serialize()); err != nil {
-		log.Printf("Failed to send auth success to %s: %v", clientIP, err)
+	// Статические IP из конфига
+	var staticIP4, staticIP6 net.IP
+	if userEntry.IP4 != "" {
+		staticIP4 = net.ParseIP(userEntry.IP4)
+	}
+	if userEntry.IP6 != "" {
+		staticIP6 = net.ParseIP(userEntry.IP6)
+	}
+
+	// Создаём сессию
+	sess, err := registry.CreateSession(username, clientAddr, conn, staticIP4, staticIP6)
+	if err != nil {
+		log.Printf("Failed to create session for %s: %v", username, err)
 		return
 	}
 
-	// Отправка конфигурации маршрутов
+	log.Printf("Session %s created: IP4=%v, IP6=%v", sess.ID, sess.IP4, sess.IP6)
+
+	// AUTH_SUCCESS
+	serverIP4 := net.ParseIP(cfg.TUN.IP)
+	serverIP6 := net.ParseIP(cfg.TUN.IP6)
+
+	authSuccessPayload := protocol.CreateAuthSuccessPayload(
+		sess.ID,
+		ipBytesOrNil(sess.IP4),
+		ipBytesOrNil(sess.IP6),
+		ipBytesOrNil(serverIP4),
+		ipBytesOrNil(serverIP6),
+		byte(cfg.TUN.Subnet),
+		byte(cfg.TUN.Subnet6),
+	)
+	authSuccess := protocol.CreateControlMessage(protocol.ControlTypeAuthSuccess, authSuccessPayload)
+	if err := conn.WriteMessage(websocket.BinaryMessage, authSuccess.Serialize()); err != nil {
+		log.Printf("Failed to send auth success: %v", err)
+		registry.RemoveSession(sess.ID)
+		return
+	}
+
+	// ROUTES_CONFIG
 	if len(cfg.Routes) > 0 {
 		if err := sendRoutesConfig(conn, cfg.Routes); err != nil {
-			log.Printf("Failed to send routes config to %s: %v", clientIP, err)
+			log.Printf("Failed to send routes: %v", err)
+			registry.RemoveSession(sess.ID)
 			return
 		}
 	}
 
-	// Мьютекс для синхронизации записей в WebSocket
-	var wsMutex sync.Mutex
-
-	// Фрагментация
+	// Циклы обмена данными
 	frag := fragment.NewFragmenter()
 	assembler := fragment.NewAssembler(cfg.GetFragmentTimeout(), func(fragmentID uint32) {
-		log.Printf("Fragment assembly timeout for ID=%d", fragmentID)
+		log.Printf("[%s] Fragment assembly timeout for ID=%d", sess.ID, fragmentID)
 	})
 	defer assembler.Cleanup()
 
-	// Запуск цикла обмена данными
-	go tunToWS(tunIface, conn, &wsMutex, cfg, frag)
-	go keepaliveMonitor(conn, cfg, &wsMutex)
-	wsToTUN(tunIface, conn, cfg, &wsMutex, assembler)
+	go tunToWSForSession(tunIface, sess, cfg, frag, registry)
+	go keepaliveMonitorForSession(sess, cfg)
+	wsToTUNForSession(tunIface, sess, cfg, assembler, registry)
+
+	log.Printf("Session %s ended", sess.ID)
+	registry.RemoveSession(sess.ID)
 }
 
-// authenticate проверяет учётные данные
-func authenticate(username, password string, cfg *config.ServerConfig) bool {
-	for _, user := range cfg.Auth.Users {
-		if user.Username == username && user.Password == password {
-			return true
+func findUser(username, password string, cfg *config.ServerConfig) *config.UserEntry {
+	for i := range cfg.Auth.Users {
+		u := &cfg.Auth.Users[i]
+		if u.Username == username && u.Password == password {
+			return u
 		}
 	}
-	return false
+	return nil
 }
 
-// sendRoutesConfig отправляет конфигурацию маршрутов клиенту
+func ipBytesOrNil(ip net.IP) []byte {
+	if ip == nil {
+		return []byte{}
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4
+	}
+	return ip.To16()
+}
+
 func sendRoutesConfig(conn *websocket.Conn, routeEntries []config.RouteEntry) error {
 	payload := make([]byte, 1)
 	payload[0] = byte(len(routeEntries))
@@ -244,15 +299,12 @@ func sendRoutesConfig(conn *websocket.Conn, routeEntries []config.RouteEntry) er
 	for _, entry := range routeEntries {
 		dstBytes := []byte(entry.Dst)
 		gwBytes := []byte(entry.GW)
-
 		routeData := make([]byte, 1+len(dstBytes)+1+len(gwBytes)+2)
 		routeData[0] = byte(len(dstBytes))
 		copy(routeData[1:1+len(dstBytes)], dstBytes)
 		routeData[1+len(dstBytes)] = byte(len(gwBytes))
 		copy(routeData[2+len(dstBytes):2+len(dstBytes)+len(gwBytes)], gwBytes)
 		routeData[2+len(dstBytes)+len(gwBytes)] = byte(entry.Metric)
-		// Reserved byte is 0
-
 		payload = append(payload, routeData...)
 	}
 
@@ -260,149 +312,214 @@ func sendRoutesConfig(conn *websocket.Conn, routeEntries []config.RouteEntry) er
 	return conn.WriteMessage(websocket.BinaryMessage, routesMsg.Serialize())
 }
 
-// tunToWS читает пакеты из TUN и отправляет в WebSocket
-func tunToWS(tunIface *tun.Interface, conn *websocket.Conn, mutex *sync.Mutex, cfg *config.ServerConfig, frag *fragment.Fragmenter) {
+// tunToWSForSession читает из TUN и отправляет нужной сессии по IP назначения
+func tunToWSForSession(tunIface *tun.Interface, sess *session.Session, cfg *config.ServerConfig, frag *fragment.Fragmenter, registry *session.Registry) {
 	buf := make([]byte, 65535)
 	for {
 		n, err := tunIface.Read(buf)
 		if err != nil {
-			log.Printf("Failed to read from TUN: %v", err)
+			log.Printf("[%s] Failed to read from TUN: %v", sess.ID, err)
 			return
 		}
 
 		packet := buf[:n]
 		isIPv6 := tun.IsIPv6Packet(packet)
+		targetIP := getPacketDstIP(packet)
+		targetSession := registry.GetSessionByIP(targetIP)
 
-		// Проверяем, нужно ли разбивать на фрагменты
-		if frag.NeedsFragment(len(packet)) {
-			fragMsgs := frag.Fragment(packet, isIPv6)
-			for _, msg := range fragMsgs {
-				mutex.Lock()
-				err = conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
-				mutex.Unlock()
-				if err != nil {
-					log.Printf("Failed to write fragment to WebSocket: %v", err)
-					return
-				}
-			}
+		// Если наше соединение закрыто — лог и продолжаем
+		if sess.GetConn() == nil {
+			log.Printf("[%s] Session connection is nil, skipping write", sess.ID)
 			continue
 		}
 
-		// Сжатие если включено
-		if cfg.CompressionEnabled() {
-			compressed, err := compression.Compress(packet)
-			if err == nil && len(compressed) < len(packet) {
-				msg := protocol.CreateDataMessage(compressed, isIPv6)
-				msg.Flags |= protocol.FlagCompressed
-				mutex.Lock()
-				err = conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
-				mutex.Unlock()
-				if err != nil {
-					log.Printf("Failed to write to WebSocket: %v", err)
-					return
-				}
-				continue
-			}
-			// Если сжатие неэффективно — отправляем как есть
+		// Не нашли сессию по целевому IP — лог и пропускаем
+		if targetSession == nil {
+			log.Printf("[%s] No session found for dst=%v, dropping packet", sess.ID, targetIP)
+			continue
 		}
 
-		msg := protocol.CreateDataMessage(packet, isIPv6)
-		mutex.Lock()
-		writeErr := conn.WriteMessage(websocket.BinaryMessage, msg.Serialize())
-		mutex.Unlock()
-		if writeErr != nil {
-			log.Printf("Failed to write to WebSocket: %v", writeErr)
-			return
-		}
+		writePacketToSession(targetSession, packet, isIPv6, cfg, frag)
 	}
 }
 
-// wsToTUN читает сообщения из WebSocket и записывает в TUN
-func wsToTUN(tunIface *tun.Interface, conn *websocket.Conn, cfg *config.ServerConfig, mutex *sync.Mutex, assembler *fragment.Assembler) {
-	// Устанавливаем начальный deadline
+// writePacketToSession записывает пакет в сессию через s.WritePacket (с блокировкой внутри)
+func writePacketToSession(s *session.Session, packet []byte, isIPv6 bool, cfg *config.ServerConfig, frag *fragment.Fragmenter) {
+	if frag.NeedsFragment(len(packet)) {
+		fragMsgs := frag.Fragment(packet, isIPv6)
+		for _, msg := range fragMsgs {
+			if err := s.WritePacket(msg.Serialize()); err != nil {
+				log.Printf("[%s] Failed to write fragment: %v", s.ID, err)
+				return
+			}
+		}
+		return
+	}
+
+	if cfg.CompressionEnabled() {
+		compressed, err := compression.Compress(packet)
+		if err == nil && len(compressed) < len(packet) {
+			msg := protocol.CreateDataMessage(compressed, isIPv6)
+			msg.Flags |= protocol.FlagCompressed
+			if err := s.WritePacket(msg.Serialize()); err != nil {
+				log.Printf("[%s] Failed to write compressed: %v", s.ID, err)
+				return
+			}
+			return
+		}
+	}
+
+	msg := protocol.CreateDataMessage(packet, isIPv6)
+	if err := s.WritePacket(msg.Serialize()); err != nil {
+		log.Printf("[%s] Failed to write: %v", s.ID, err)
+	}
+}
+
+// wsToTUNForSession читает из сессии и пишет в TUN
+func wsToTUNForSession(tunIface *tun.Interface, sess *session.Session, cfg *config.ServerConfig, assembler *fragment.Assembler, _ *session.Registry) {
+	sess.RLock()
+	conn := sess.WSConn
+	sess.RUnlock()
+
+	if conn == nil {
+		return
+	}
+
 	conn.SetReadDeadline(time.Now().Add(cfg.GetKeepaliveTimeout()))
 
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("Failed to read from WebSocket: %v", err)
+			log.Printf("[%s] Failed to read from WebSocket: %v", sess.ID, err)
 			return
 		}
 
-		// Обновляем deadline после получения любого сообщения
 		conn.SetReadDeadline(time.Now().Add(cfg.GetKeepaliveTimeout()))
+		sess.UpdateActivity()
 
 		if msgType != websocket.BinaryMessage {
-			log.Printf("Expected binary message, got: %d", msgType)
+			log.Printf("[%s] Expected binary, got: %d", sess.ID, msgType)
 			continue
 		}
 
 		msg, err := protocol.DeserializeMessage(data)
 		if err != nil {
-			log.Printf("Failed to deserialize message: %v", err)
+			log.Printf("[%s] Failed to deserialize: %v", sess.ID, err)
 			continue
 		}
+
+		// Статистика
+		sess.Lock()
+		sess.PacketsRecv++
+		sess.BytesRecv += uint64(len(data))
+		sess.Unlock()
 
 		switch msg.Type {
 		case protocol.MessageTypeData:
 			payload := msg.Payload
-			// Распаковка если пакет сжат
 			if msg.Flags&protocol.FlagCompressed != 0 {
 				decompressed, err := compression.Decompress(payload)
 				if err != nil {
-					log.Printf("Failed to decompress packet: %v", err)
+					log.Printf("[%s] Failed to decompress: %v", sess.ID, err)
 					continue
 				}
 				payload = decompressed
 			}
 			if _, err := tunIface.Write(payload); err != nil {
-				log.Printf("Failed to write to TUN: %v", err)
+				log.Printf("[%s] Failed to write to TUN: %v", sess.ID, err)
 			}
 
 		case protocol.MessageTypeFragment:
-			// Сборка фрагментов
 			packet, isIPv6, complete := assembler.HandleFragment(msg)
 			if complete {
-				// Распаковка если пакет сжат (флаг в isIPv6 не трогаем, сжатие в msg.Flags)
 				payload := packet
 				if msg.Flags&protocol.FlagCompressed != 0 {
 					decompressed, err := compression.Decompress(payload)
 					if err != nil {
-						log.Printf("Failed to decompress assembled packet: %v", err)
+						log.Printf("[%s] Failed to decompress assembled: %v", sess.ID, err)
 						continue
 					}
 					payload = decompressed
 				}
 				if _, err := tunIface.Write(payload); err != nil {
-					log.Printf("Failed to write assembled packet to TUN: %v", err)
+					log.Printf("[%s] Failed to write assembled: %v", sess.ID, err)
 				} else {
-					log.Printf("Assembled fragment: %d bytes (IPv6=%v)", len(payload), isIPv6)
+					log.Printf("[%s] Assembled: %d bytes (IPv6=%v)", sess.ID, len(payload), isIPv6)
 				}
 			}
 
 		case protocol.MessageTypeKeepalive:
-			// Игнорируем — keepaliveMonitor уже отправляет keepalive
-			// Ответ не нужен, чтобы избежать бесконечного цикла
-
-		default:
-			log.Printf("Unknown message type: 0x%02x", msg.Type)
+			// Игнорируем
 		}
 	}
 }
 
-// keepaliveMonitor контролирует соединение и отправляет keepalive
-func keepaliveMonitor(conn *websocket.Conn, cfg *config.ServerConfig, mutex *sync.Mutex) {
+// keepaliveMonitorForSession отправляет keepalive для сессии
+func keepaliveMonitorForSession(sess *session.Session, cfg *config.ServerConfig) {
 	ticker := time.NewTicker(cfg.GetKeepaliveInterval())
 	defer ticker.Stop()
 
 	for range ticker.C {
+		sess.RLock()
+		conn := sess.WSConn
+		state := sess.State
+		sess.RUnlock()
+
+		if conn == nil || state != session.SessionActive {
+			return
+		}
+
 		keepalive := protocol.CreateKeepaliveMessage()
-		mutex.Lock()
-		err := conn.WriteMessage(websocket.BinaryMessage, keepalive.Serialize())
-		mutex.Unlock()
-		if err != nil {
-			log.Printf("Failed to send keepalive: %v", err)
+		if err := conn.WriteMessage(websocket.BinaryMessage, keepalive.Serialize()); err != nil {
+			log.Printf("[%s] Failed to send keepalive: %v", sess.ID, err)
 			return
 		}
 	}
+}
+
+// sessionCleanup удаляет мёртвые сессии
+func sessionCleanup(registry *session.Registry, cfg *config.ServerConfig) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		for _, s := range registry.ActiveSessions() {
+			s.RLock()
+			lastActivity := s.LastActivity
+			s.RUnlock()
+
+			if time.Since(lastActivity) > cfg.GetKeepaliveTimeout() {
+				log.Printf("[%s] Session expired (last activity: %s ago)",
+					s.ID, time.Since(lastActivity).Round(time.Second))
+				s.Lock()
+				s.State = session.SessionExpired
+				if s.WSConn != nil {
+					s.WSConn.Close()
+				}
+				s.Unlock()
+			}
+		}
+		registry.CleanupExpired()
+	}
+}
+
+// getPacketDstIP извлекает IP назначения из пакета
+func getPacketDstIP(packet []byte) net.IP {
+	if len(packet) == 0 {
+		return nil
+	}
+	version := packet[0] >> 4
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return nil
+		}
+		return net.IPv4(packet[16], packet[17], packet[18], packet[19])
+	case 6:
+		if len(packet) < 40 {
+			return nil
+		}
+		return net.IP(packet[24:40])
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/binary"
 	"fmt"
+	"net"
 )
 
 // Типы сообщений
@@ -73,10 +74,13 @@ type RouteEntry struct {
 
 // AuthSuccessPayload данные успешной аутентификации
 type AuthSuccessPayload struct {
-	ClientIP []byte
-	ServerIP []byte
-	Subnet   byte
-	IsIPv6   bool
+	SessionID string   // UUID сессии
+	ClientIP4 net.IP   // IPv4 клиента (может быть nil)
+	ClientIP6 net.IP   // IPv6 клиента (может быть nil)
+	ServerIP4 net.IP   // IPv4 сервера (может быть nil)
+	ServerIP6 net.IP   // IPv6 сервера (может быть nil)
+	Subnet4   byte     // маска подсети IPv4
+	Subnet6   byte     // маска подсети IPv6
 }
 
 // StatisticsPayload данные статистики
@@ -235,37 +239,154 @@ func ParseAuthResponsePayload(payload []byte) (username, password string, err er
 }
 
 // CreateAuthSuccessPayload создаёт payload для AUTH_SUCCESS
-func CreateAuthSuccessPayload(clientIP, serverIP []byte, subnet byte) []byte {
-	payload := make([]byte, len(clientIP)+len(serverIP)+1)
-	copy(payload[0:len(clientIP)], clientIP)
-	copy(payload[len(clientIP):len(clientIP)+len(serverIP)], serverIP)
-	payload[len(clientIP)+len(serverIP)] = subnet
+// Поддерживает оба адреса (IPv4 и IPv6) одновременно
+// Формат: SessionID_len(1) + SessionID + ClientIP4_len(1) + ClientIP4 + ClientIP6_len(1) + ClientIP6
+//
+//	ServerIP4_len(1) + ServerIP4 + ServerIP6_len(1) + ServerIP6 + Subnet4 + Subnet6
+func CreateAuthSuccessPayload(sessionID string, clientIP4, clientIP6, serverIP4, serverIP6 []byte, subnet4, subnet6 byte) []byte {
+	sessionIDBytes := []byte(sessionID)
+	c4Len := byte(len(clientIP4))
+	c6Len := byte(len(clientIP6))
+	s4Len := byte(len(serverIP4))
+	s6Len := byte(len(serverIP6))
+
+	total := 1 + len(sessionIDBytes) + // SessionID
+		1 + len(clientIP4) + // ClientIP4
+		1 + len(clientIP6) + // ClientIP6
+		1 + len(serverIP4) + // ServerIP4
+		1 + len(serverIP6) + // ServerIP6
+		2 // Subnet4 + Subnet6
+
+	payload := make([]byte, total)
+	offset := 0
+
+	// SessionID
+	payload[offset] = byte(len(sessionIDBytes))
+	offset++
+	copy(payload[offset:], sessionIDBytes)
+	offset += len(sessionIDBytes)
+
+	// ClientIP4
+	payload[offset] = c4Len
+	offset++
+	copy(payload[offset:], clientIP4)
+	offset += len(clientIP4)
+
+	// ClientIP6
+	payload[offset] = c6Len
+	offset++
+	copy(payload[offset:], clientIP6)
+	offset += len(clientIP6)
+
+	// ServerIP4
+	payload[offset] = s4Len
+	offset++
+	copy(payload[offset:], serverIP4)
+	offset += len(serverIP4)
+
+	// ServerIP6
+	payload[offset] = s6Len
+	offset++
+	copy(payload[offset:], serverIP6)
+	offset += len(serverIP6)
+
+	// Subnets
+	payload[offset] = subnet4
+	offset++
+	payload[offset] = subnet6
 
 	return payload
 }
 
 // ParseAuthSuccessPayload парсит payload AUTH_SUCCESS
+// Формат: SessionID_len(1) + SessionID + ClientIP4_len(1) + ClientIP4 + ClientIP6_len(1) + ClientIP6
+//
+//	ServerIP4_len(1) + ServerIP4 + ServerIP6_len(1) + ServerIP6 + Subnet4 + Subnet6
 func ParseAuthSuccessPayload(payload []byte) (*AuthSuccessPayload, error) {
 	var result AuthSuccessPayload
 
-	switch len(payload) {
-	case 9: // IPv4: 4+4+1
-		result.IsIPv6 = false
-		result.ClientIP = make([]byte, 4)
-		copy(result.ClientIP, payload[0:4])
-		result.ServerIP = make([]byte, 4)
-		copy(result.ServerIP, payload[4:8])
-		result.Subnet = payload[8]
-	case 33: // IPv6: 16+16+1
-		result.IsIPv6 = true
-		result.ClientIP = make([]byte, 16)
-		copy(result.ClientIP, payload[0:16])
-		result.ServerIP = make([]byte, 16)
-		copy(result.ServerIP, payload[16:32])
-		result.Subnet = payload[32]
-	default:
-		return nil, fmt.Errorf("invalid payload size for auth success: %d", len(payload))
+	if len(payload) < 1 {
+		return nil, fmt.Errorf("payload too short")
 	}
+
+	offset := 0
+
+	// SessionID
+	sessionIDLen := int(payload[offset])
+	offset++
+	if len(payload) < offset+sessionIDLen {
+		return nil, fmt.Errorf("invalid sessionID length: need %d, have %d", offset+sessionIDLen, len(payload))
+	}
+	result.SessionID = string(payload[offset : offset+sessionIDLen])
+	offset += sessionIDLen
+
+	// ClientIP4
+	if offset >= len(payload) {
+		return nil, fmt.Errorf("unexpected end of payload (ClientIP4 len)")
+	}
+	c4Len := int(payload[offset])
+	offset++
+	if c4Len > 0 {
+		if offset+c4Len > len(payload) {
+			return nil, fmt.Errorf("invalid ClientIP4 length")
+		}
+		result.ClientIP4 = make([]byte, c4Len)
+		copy(result.ClientIP4, payload[offset:offset+c4Len])
+		offset += c4Len
+	}
+
+	// ClientIP6
+	if offset >= len(payload) {
+		return nil, fmt.Errorf("unexpected end of payload (ClientIP6 len)")
+	}
+	c6Len := int(payload[offset])
+	offset++
+	if c6Len > 0 {
+		if offset+c6Len > len(payload) {
+			return nil, fmt.Errorf("invalid ClientIP6 length")
+		}
+		result.ClientIP6 = make([]byte, c6Len)
+		copy(result.ClientIP6, payload[offset:offset+c6Len])
+		offset += c6Len
+	}
+
+	// ServerIP4
+	if offset >= len(payload) {
+		return nil, fmt.Errorf("unexpected end of payload (ServerIP4 len)")
+	}
+	s4Len := int(payload[offset])
+	offset++
+	if s4Len > 0 {
+		if offset+s4Len > len(payload) {
+			return nil, fmt.Errorf("invalid ServerIP4 length")
+		}
+		result.ServerIP4 = make([]byte, s4Len)
+		copy(result.ServerIP4, payload[offset:offset+s4Len])
+		offset += s4Len
+	}
+
+	// ServerIP6
+	if offset >= len(payload) {
+		return nil, fmt.Errorf("unexpected end of payload (ServerIP6 len)")
+	}
+	s6Len := int(payload[offset])
+	offset++
+	if s6Len > 0 {
+		if offset+s6Len > len(payload) {
+			return nil, fmt.Errorf("invalid ServerIP6 length")
+		}
+		result.ServerIP6 = make([]byte, s6Len)
+		copy(result.ServerIP6, payload[offset:offset+s6Len])
+		offset += s6Len
+	}
+
+	// Subnets
+	if offset+1 >= len(payload) {
+		return nil, fmt.Errorf("unexpected end of payload (subnets)")
+	}
+	result.Subnet4 = payload[offset]
+	offset++
+	result.Subnet6 = payload[offset]
 
 	return &result, nil
 }

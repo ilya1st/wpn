@@ -50,6 +50,24 @@ dc() {
     $DC -f "$COMPOSE_FILE" "$@"
 }
 
+dc_logs() {
+    # Старый docker-compose не поддерживает --tail, выводим все логи
+    local TAIL=""
+    local ARGS=""
+    for arg in "$@"; do
+        if [[ "$arg" == --tail=* ]]; then
+            TAIL="${arg#--tail=}"
+        else
+            ARGS="$ARGS $arg"
+        fi
+    done
+    if [ "$DC" = "docker compose" ] && [ -n "$TAIL" ]; then
+        dc logs --tail="$TAIL" $ARGS
+    else
+        dc logs $ARGS
+    fi
+}
+
 do_up() {
     build
     echo ""
@@ -109,15 +127,15 @@ do_test() {
 
     echo ""
     echo "=== Логи сервера ==="
-    dc logs vpn-server --tail=20
+    dc_logs vpn-server --tail=20
 
     echo ""
     echo "=== Логи клиента 1 ==="
-    dc logs vpn-client-1 --tail=20
+    dc_logs vpn-client-1 --tail=20
 
     echo ""
     echo "=== Логи клиента 2 ==="
-    dc logs vpn-client-2 --tail=20
+    dc_logs vpn-client-2 --tail=20
 
     echo ""
     echo "=== Проверка: ping сервера от клиента 1 ==="

@@ -52,6 +52,8 @@ type AuthSection struct {
 type UserEntry struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	IP4      string `yaml:"ip4"` // статический IPv4 (пусто = динамический)
+	IP6      string `yaml:"ip6"` // статический IPv6 (пусто = динамический)
 }
 
 // TUNSection параметры TUN интерфейса сервера
