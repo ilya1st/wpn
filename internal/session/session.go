@@ -94,31 +94,14 @@ func (s *Session) InitWriter(chSize int) {
 }
 
 // StartWriter запускает горутину writer'а.
-// keepaliveInterval — интервал отправки keepalive, 0 = отключён.
+// writeTimeout — таймаут на записи в канал и в WebSocket.
 // onError — callback при ошибке записи (для логирования и сигнала остановки)
-func (s *Session) StartWriter(keepaliveInterval time.Duration, onError func(error)) {
+func (s *Session) StartWriter(writeTimeout time.Duration, onError func(error)) {
 	go func() {
-		var keepaliveTicker *time.Ticker
-		var keepaliveCh <-chan time.Time
-		if keepaliveInterval > 0 {
-			keepaliveTicker = time.NewTicker(keepaliveInterval)
-			defer keepaliveTicker.Stop()
-			keepaliveCh = keepaliveTicker.C
-		}
-
-		keepaliveMsg := createKeepaliveMessageBytes()
-
 		for {
 			select {
 			case data := <-s.writeCh:
-				if err := s.writeToConn(data); err != nil {
-					if onError != nil {
-						onError(err)
-					}
-					return
-				}
-			case <-keepaliveCh:
-				if err := s.writeToConn(keepaliveMsg); err != nil {
+				if err := s.writeToConn(data, writeTimeout); err != nil {
 					if onError != nil {
 						onError(err)
 					}
@@ -142,37 +125,33 @@ func (s *Session) StopWriter() {
 }
 
 // QueueWrite ставит данные в очередь на отправку.
-// Неблокирующий: если канал полон — данные дропаются.
-func (s *Session) QueueWrite(data []byte) bool {
+// Блокирующий с таймаутом: если канал полон дольше timeout — возвращает false.
+func (s *Session) QueueWrite(data []byte, timeout time.Duration) bool {
 	if s.writeCh == nil {
 		return false
 	}
 	select {
 	case s.writeCh <- data:
 		return true
-	default:
-		// Канал полон — медленный клиент, дропаем
+	case <-time.After(timeout):
+		// Канал полон дольше таймаута — клиент не читает
 		return false
 	}
 }
 
-// writeToConn безопасно пишет в WebSocket соединение
-func (s *Session) writeToConn(data []byte) error {
+// writeToConn безопасно пишет в WebSocket соединение с таймаутом
+func (s *Session) writeToConn(data []byte, timeout time.Duration) error {
 	s.mu.RLock()
 	conn := s.WSConn
 	s.mu.RUnlock()
 	if conn == nil {
 		return fmt.Errorf("no websocket connection")
 	}
+	if timeout > 0 {
+		conn.SetWriteDeadline(time.Now().Add(timeout))
+		defer conn.SetWriteDeadline(time.Time{}) // сброс после записи
+	}
 	return conn.WriteMessage(websocket.BinaryMessage, data)
-}
-
-// createKeepaliveMessageBytes создаёт бинарное представление KEEPALIVE
-func createKeepaliveMessageBytes() []byte {
-	header := make([]byte, 4)
-	header[0] = 0x03 // MessageTypeKeepalive
-	// Flags=0, PayloadLength=0
-	return header
 }
 
 // Registry — реестр активных сессий
@@ -340,7 +319,8 @@ func (r *Registry) GetSessionByIP(ip net.IP) *Session {
 	return r.byIP6[ip.String()]
 }
 
-// RemoveSession удаляет сессию и освобождает адреса
+// RemoveSession удаляет сессию и освобождает адреса.
+// Если сессия в состоянии SessionReconnecting — IP не освобождаются.
 func (r *Registry) RemoveSession(sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -351,24 +331,28 @@ func (r *Registry) RemoveSession(sessionID string) {
 	}
 
 	s.mu.Lock()
+	reconnecting := s.State == SessionReconnecting
 	s.State = SessionExpired
 	s.mu.Unlock()
 
-	// Освобождаем динамические адреса
-	if s.IsDynamicIP4 && len(s.IP4) > 0 && r.ip4Pool != nil {
-		r.ip4Pool.Release(s.IP4)
-	}
-	if s.IsDynamicIP6 && len(s.IP6) > 0 && r.ip6Pool != nil {
-		r.ip6Pool.Release(s.IP6)
-	}
+	// Освобождаем динамические адреса только если сессия НЕ в состоянии реконнекта
+	if !reconnecting {
+		if s.IsDynamicIP4 && len(s.IP4) > 0 && r.ip4Pool != nil {
+			r.ip4Pool.Release(s.IP4)
+		}
+		if s.IsDynamicIP6 && len(s.IP6) > 0 && r.ip6Pool != nil {
+			r.ip6Pool.Release(s.IP6)
+		}
 
-	// Удаляем из IP-мапов
-	if len(s.IP4) > 0 {
-		delete(r.byIP4, s.IP4.String())
+		// Удаляем из IP-мапов
+		if len(s.IP4) > 0 {
+			delete(r.byIP4, s.IP4.String())
+		}
+		if len(s.IP6) > 0 {
+			delete(r.byIP6, s.IP6.String())
+		}
 	}
-	if len(s.IP6) > 0 {
-		delete(r.byIP6, s.IP6.String())
-	}
+	// Если reconnecting — IP остаются в мапах, сессия ждёт реконнекта
 
 	// Удаляем из byLogin
 	loginSessions := r.byLogin[s.Login]
@@ -391,6 +375,22 @@ func (r *Registry) ActiveSessions() []*Session {
 	for _, s := range r.sessions {
 		s.mu.RLock()
 		if s.State == SessionActive {
+			result = append(result, s)
+		}
+		s.mu.RUnlock()
+	}
+	return result
+}
+
+// ReconnectingSessions возвращает все сессии в состоянии реконнекта
+func (r *Registry) ReconnectingSessions() []*Session {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*Session
+	for _, s := range r.sessions {
+		s.mu.RLock()
+		if s.State == SessionReconnecting {
 			result = append(result, s)
 		}
 		s.mu.RUnlock()

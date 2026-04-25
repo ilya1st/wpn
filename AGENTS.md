@@ -54,6 +54,7 @@ internal/compression/       ← Сжатие пакетов (zlib)
 - **Сжатие**: `connection_settings.compression` (zlib, по пакетам, FlagCompressed)
 - **Конфиг**: `timeouts` → `connection_settings` (ServerConnectionSettings, ClientConnectionSettings)
 - **UserEntry.ip4/ip6** — статические адреса для клиентов
+- **Сервер**: `send_packet_buffer_size` (размер канала записи, по умолчанию 256), `write_channel_timeout` (таймаут записи, по умолчанию 5с), `reconnect_timeout` (хранение сессии для реконнекта, по умолчанию 300с)
 
 ### TUN интерфейс (internal/tun/)
 - **tun.go** — общий код: Interface, Config, маршруты, утилиты
@@ -79,11 +80,16 @@ internal/compression/       ← Сжатие пакетов (zlib)
 
 ### Сессии (internal/session/session.go)
 - **Session** — UUID, Login, IsDynamicIP4/6, IP4, IP6, ClientIP, WSConn, State, LastActivity, DTStart, DTReconnect, ReconnectCount, Bytes/Packets Sent/Recv, ClientVersion
+- **SessionState** — `SessionActive`, `SessionReconnecting`, `SessionExpired`
 - **Registry** — реестр сессий с hashmap `byIP4`/`byIP6` для O(1) поиска сессии по IP
 - **IPPool** — пул динамических адресов из подсети TUN
-- `Session.WritePacket()` — безопасная запись в WebSocket (с блокировкой `mu`)
-- `Session.GetConn()` — безопасное получение соединения
-- `sessionCleanup()` — удаление мёртвых сессий по keepalive timeout
+- `Session.InitWriter(bufferSize)` — инициализация буферизованного канала записи
+- `Session.StartWriter(writeTimeout, onError)` — запуск writer'а; **без keepalive** (только DATA); `writeTimeout` применяется к записи в канал И в WebSocket
+- `Session.QueueWrite(data, timeout)` — **блокирующий с таймаутом** (не неблокирующий); при истечении — `false`
+- `Session.writeToConn(data, timeout)` — ставит `SetWriteDeadline` перед `WriteMessage`
+- `Registry.ReconnectingSessions()` — возвращает сессии в состоянии реконнекта
+- `Registry.RemoveSession()` — **НЕ освобождает IP** если сессия в `SessionReconnecting`
+- `sessionCleanup()` — активные без активности → `SessionReconnecting`; реконнект дольше `reconnect_timeout` → удаление; keepalive от клиента обновляет `LastActivity`
 
 ### Тестирование
 
@@ -137,6 +143,8 @@ internal/compression/       ← Сжатие пакетов (zlib)
 
 11. **Пароли логируются** — **РЕШЕНО**: убрано логирование паролей в открытом виде
 
+12. **Неблокирующий дроп пакетов** — **РЕШЕНО**: `QueueWrite` и `writeToConn` стали блокирующими с таймаутом; при переполнении канала сессия переводится в `SessionReconnecting`, IP сохраняются для реконнекта; сервер больше не шлёт keepalive (только читает от клиента)
+
 ## 🔄 Последовательность подключения
 
 ```
@@ -168,6 +176,7 @@ Client                          Server
 ### P2 — качество кода
 
 - [ ] Дублирование кода сервер/клиент
+- [ ] **Транспортный интерфейс** — абстрактный `Transport` (`Connect/Read/Write/Close`), обёртка `WebSocketTransport`, замена `*websocket.Conn` на интерфейс
 - [ ] Unit тесты (protocol, config, routes, session)
 
 ### P3 — инфраструктура
@@ -240,4 +249,4 @@ sudo ./vpnclient -config client.yaml
 ---
 
 *Последнее обновление: 25 Апреля 2026*
-*Реестр сессий, per-session маршрутизация, пулы IP, dual-stack AUTH_SUCCESS, фрагментация пакетов*
+*Реестр сессий, per-session маршрутизация, пулы IP, dual-stack AUTH_SUCCESS, фрагментация пакетов, блокирующий QueueWrite с таймаутом, SessionReconnecting, сохранение IP при реконнекте*

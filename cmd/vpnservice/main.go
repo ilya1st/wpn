@@ -262,8 +262,8 @@ func handleClient(conn *websocket.Conn, tunIface *tun.Interface, _ *routes.Manag
 	}
 
 	// Инициализация writer'а сессии (канал + goroutine)
-	sess.InitWriter(256)
-	sess.StartWriter(cfg.GetKeepaliveInterval(), func(err error) {
+	sess.InitWriter(cfg.GetSendPacketBufferSize())
+	sess.StartWriter(cfg.GetWriteChannelTimeout(), func(err error) {
 		log.Printf("[%s] Writer error: %v", sess.ID, err)
 	})
 
@@ -342,8 +342,17 @@ func tunRouter(tunIface *tun.Interface, registry *session.Registry, cfg *config.
 		}
 
 		msg := buildSessionMessage(packet, isIPv6, cfg)
-		if !targetSession.QueueWrite(msg) {
-			log.Printf("[%s] writeCh full, dropping packet (dst=%v)", targetSession.ID, targetIP)
+		if !targetSession.QueueWrite(msg, cfg.GetWriteChannelTimeout()) {
+			log.Printf("[%s] writeCh full for %v, terminating session (dst=%v)",
+				targetSession.ID, cfg.GetWriteChannelTimeout(), targetIP)
+			targetSession.SetConnectionState(session.SessionReconnecting)
+			targetSession.StopWriter()
+			targetSession.Lock()
+			if targetSession.WSConn != nil {
+				targetSession.WSConn.Close()
+			}
+			targetSession.Unlock()
+			// Сессия остаётся в реестре для потенциального реконнекта
 		}
 	}
 }
@@ -437,34 +446,53 @@ func wsToTUNForSession(tunIface *tun.Interface, sess *session.Session, cfg *conf
 			}
 
 		case protocol.MessageTypeKeepalive:
-			// Игнорируем
+			sess.UpdateActivity()
 		}
 	}
 }
 
-// sessionCleanup удаляет мёртвые сессии
+// sessionCleanup удаляет мёртвые сессии:
+// - Активные сессии без активности > keepalive_timeout → SessionReconnecting
+// - Сессии в реконнекте > reconnect_timeout → удаление
 func sessionCleanup(registry *session.Registry, cfg *config.ServerConfig) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
+		// Проверяем активные сессии на таймаут
 		for _, s := range registry.ActiveSessions() {
 			s.RLock()
 			lastActivity := s.LastActivity
 			s.RUnlock()
 
 			if time.Since(lastActivity) > cfg.GetKeepaliveTimeout() {
-				log.Printf("[%s] Session expired (last activity: %s ago)",
+				log.Printf("[%s] Session inactive (last activity: %s ago), moving to reconnecting",
 					s.ID, time.Since(lastActivity).Round(time.Second))
-				s.StopWriter()
 				s.Lock()
-				s.State = session.SessionExpired
+				s.State = session.SessionReconnecting
+				s.DTReconnect = time.Now()
 				if s.WSConn != nil {
 					s.WSConn.Close()
 				}
 				s.Unlock()
+				s.StopWriter()
 			}
 		}
+
+		// Удаляем сессии в реконнекте дольше reconnect_timeout
+		for _, s := range registry.ReconnectingSessions() {
+			s.RLock()
+			dtReconnect := s.DTReconnect
+			s.RUnlock()
+
+			if time.Since(dtReconnect) > cfg.GetReconnectTimeout() {
+				log.Printf("[%s] Session reconnect timeout (%s ago), removing",
+					s.ID, time.Since(dtReconnect).Round(time.Second))
+				registry.RemoveSession(s.ID)
+			}
+		}
+
+		// Чистим удалённые сессии из мапы
 		registry.CleanupExpired()
 	}
 }

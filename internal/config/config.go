@@ -109,10 +109,12 @@ type RouteEntry struct {
 
 // ServerConnectionSettings настройки соединения сервера
 type ServerConnectionSettings struct {
-	KeepaliveInterval int  `yaml:"keepalive_interval"`
-	KeepaliveTimeout  int  `yaml:"keepalive_timeout"`
-	FragmentTimeout   int  `yaml:"fragment_timeout"`
-	Compression       bool `yaml:"compression"`
+	KeepaliveTimeout       int  `yaml:"keepalive_timeout"`        // таймаут read deadline (сек)
+	FragmentTimeout        int  `yaml:"fragment_timeout"`         // таймаут сборки фрагментов (сек)
+	Compression            bool `yaml:"compression"`              // сжатие пакетов
+	SendPacketBufferSize   int  `yaml:"send_packet_buffer_size"`  // размер буфера записи (кол-во пакетов)
+	WriteChannelTimeout    int  `yaml:"write_channel_timeout"`    // таймаут записи в канал (сек)
+	ReconnectTimeout       int  `yaml:"reconnect_timeout"`        // время хранения сессии для реконнекта (сек)
 }
 
 // ClientConnectionSettings настройки соединения клиента
@@ -181,14 +183,20 @@ func (c *ServerConfig) setDefaults() {
 	if c.TUN.Subnet == 0 {
 		c.TUN.Subnet = 24
 	}
-	if c.Connection.KeepaliveInterval == 0 {
-		c.Connection.KeepaliveInterval = 30
-	}
 	if c.Connection.KeepaliveTimeout == 0 {
 		c.Connection.KeepaliveTimeout = 90
 	}
 	if c.Connection.FragmentTimeout == 0 {
 		c.Connection.FragmentTimeout = 5
+	}
+	if c.Connection.SendPacketBufferSize == 0 {
+		c.Connection.SendPacketBufferSize = 256
+	}
+	if c.Connection.WriteChannelTimeout == 0 {
+		c.Connection.WriteChannelTimeout = 5
+	}
+	if c.Connection.ReconnectTimeout == 0 {
+		c.Connection.ReconnectTimeout = 300
 	}
 }
 
@@ -225,11 +233,6 @@ func (c *ServerConfig) GetAuthTimeout() time.Duration {
 	return time.Duration(c.Auth.Timeout) * time.Second
 }
 
-// GetKeepaliveInterval возвращает интервал keepalive как Duration
-func (c *ServerConfig) GetKeepaliveInterval() time.Duration {
-	return time.Duration(c.Connection.KeepaliveInterval) * time.Second
-}
-
 // GetKeepaliveTimeout возвращает таймаут keepalive как Duration
 func (c *ServerConfig) GetKeepaliveTimeout() time.Duration {
 	return time.Duration(c.Connection.KeepaliveTimeout) * time.Second
@@ -238,6 +241,21 @@ func (c *ServerConfig) GetKeepaliveTimeout() time.Duration {
 // GetFragmentTimeout возвращает таймаут фрагментации как Duration
 func (c *ServerConfig) GetFragmentTimeout() time.Duration {
 	return time.Duration(c.Connection.FragmentTimeout) * time.Second
+}
+
+// GetSendPacketBufferSize возвращает размер буфера записи
+func (c *ServerConfig) GetSendPacketBufferSize() int {
+	return c.Connection.SendPacketBufferSize
+}
+
+// GetWriteChannelTimeout возвращает таймаут записи в канал как Duration
+func (c *ServerConfig) GetWriteChannelTimeout() time.Duration {
+	return time.Duration(c.Connection.WriteChannelTimeout) * time.Second
+}
+
+// GetReconnectTimeout возвращает время хранения сессии для реконнекта как Duration
+func (c *ServerConfig) GetReconnectTimeout() time.Duration {
+	return time.Duration(c.Connection.ReconnectTimeout) * time.Second
 }
 
 // GetFragmentTimeout возвращает таймаут фрагментации как Duration
