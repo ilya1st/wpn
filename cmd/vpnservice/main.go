@@ -119,6 +119,9 @@ func main() {
 		}
 	}()
 
+	// Один TUN reader — читает пакеты и маршрутизирует по сессиям
+	go tunRouter(tunIface, registry, cfg)
+
 	// Мониторинг мёртвых сессий
 	go sessionCleanup(registry, cfg)
 
@@ -136,6 +139,7 @@ func main() {
 
 	log.Println("Shutting down...")
 	for _, s := range registry.ActiveSessions() {
+		s.StopWriter()
 		s.Lock()
 		if s.WSConn != nil {
 			s.WSConn.Close()
@@ -257,15 +261,18 @@ func handleClient(conn *websocket.Conn, tunIface *tun.Interface, _ *routes.Manag
 		}
 	}
 
-	// Циклы обмена данными
-	frag := fragment.NewFragmenter()
+	// Инициализация writer'а сессии (канал + goroutine)
+	sess.InitWriter(256)
+	sess.StartWriter(cfg.GetKeepaliveInterval(), func(err error) {
+		log.Printf("[%s] Writer error: %v", sess.ID, err)
+	})
+
+	// Чтение из WebSocket клиента → TUN
 	assembler := fragment.NewAssembler(cfg.GetFragmentTimeout(), func(fragmentID uint32) {
 		log.Printf("[%s] Fragment assembly timeout for ID=%d", sess.ID, fragmentID)
 	})
 	defer assembler.Cleanup()
 
-	go tunToWSForSession(tunIface, sess, cfg, frag, registry)
-	go keepaliveMonitorForSession(sess, cfg)
 	wsToTUNForSession(tunIface, sess, cfg, assembler, registry)
 
 	log.Printf("Session %s ended", sess.ID)
@@ -312,67 +319,48 @@ func sendRoutesConfig(conn *websocket.Conn, routeEntries []config.RouteEntry) er
 	return conn.WriteMessage(websocket.BinaryMessage, routesMsg.Serialize())
 }
 
-// tunToWSForSession читает из TUN и отправляет нужной сессии по IP назначения
-func tunToWSForSession(tunIface *tun.Interface, sess *session.Session, cfg *config.ServerConfig, frag *fragment.Fragmenter, registry *session.Registry) {
+// tunRouter — единственный reader TUN интерфейса.
+// Читает пакеты, определяет целевой IP, маршрутизирует через QueueWrite.
+func tunRouter(tunIface *tun.Interface, registry *session.Registry, cfg *config.ServerConfig) {
 	buf := make([]byte, 65535)
+
 	for {
 		n, err := tunIface.Read(buf)
 		if err != nil {
-			log.Printf("[%s] Failed to read from TUN: %v", sess.ID, err)
+			log.Printf("tunRouter: Failed to read from TUN: %v", err)
 			return
 		}
 
-		packet := buf[:n]
+		packet := make([]byte, n)
+		copy(packet, buf[:n])
 		isIPv6 := tun.IsIPv6Packet(packet)
 		targetIP := getPacketDstIP(packet)
 		targetSession := registry.GetSessionByIP(targetIP)
 
-		// Если наше соединение закрыто — лог и продолжаем
-		if sess.GetConn() == nil {
-			log.Printf("[%s] Session connection is nil, skipping write", sess.ID)
-			continue
-		}
-
-		// Не нашли сессию по целевому IP — лог и пропускаем
 		if targetSession == nil {
-			log.Printf("[%s] No session found for dst=%v, dropping packet", sess.ID, targetIP)
 			continue
 		}
 
-		writePacketToSession(targetSession, packet, isIPv6, cfg, frag)
+		msg := buildSessionMessage(packet, isIPv6, cfg)
+		if !targetSession.QueueWrite(msg) {
+			log.Printf("[%s] writeCh full, dropping packet (dst=%v)", targetSession.ID, targetIP)
+		}
 	}
 }
 
-// writePacketToSession записывает пакет в сессию через s.WritePacket (с блокировкой внутри)
-func writePacketToSession(s *session.Session, packet []byte, isIPv6 bool, cfg *config.ServerConfig, frag *fragment.Fragmenter) {
-	if frag.NeedsFragment(len(packet)) {
-		fragMsgs := frag.Fragment(packet, isIPv6)
-		for _, msg := range fragMsgs {
-			if err := s.WritePacket(msg.Serialize()); err != nil {
-				log.Printf("[%s] Failed to write fragment: %v", s.ID, err)
-				return
-			}
-		}
-		return
-	}
-
+// buildSessionMessage создаёт байты сообщения для отправки клиенту
+func buildSessionMessage(packet []byte, isIPv6 bool, cfg *config.ServerConfig) []byte {
 	if cfg.CompressionEnabled() {
 		compressed, err := compression.Compress(packet)
 		if err == nil && len(compressed) < len(packet) {
 			msg := protocol.CreateDataMessage(compressed, isIPv6)
 			msg.Flags |= protocol.FlagCompressed
-			if err := s.WritePacket(msg.Serialize()); err != nil {
-				log.Printf("[%s] Failed to write compressed: %v", s.ID, err)
-				return
-			}
-			return
+			return msg.Serialize()
 		}
 	}
 
 	msg := protocol.CreateDataMessage(packet, isIPv6)
-	if err := s.WritePacket(msg.Serialize()); err != nil {
-		log.Printf("[%s] Failed to write: %v", s.ID, err)
-	}
+	return msg.Serialize()
 }
 
 // wsToTUNForSession читает из сессии и пишет в TUN
@@ -454,29 +442,6 @@ func wsToTUNForSession(tunIface *tun.Interface, sess *session.Session, cfg *conf
 	}
 }
 
-// keepaliveMonitorForSession отправляет keepalive для сессии
-func keepaliveMonitorForSession(sess *session.Session, cfg *config.ServerConfig) {
-	ticker := time.NewTicker(cfg.GetKeepaliveInterval())
-	defer ticker.Stop()
-
-	for range ticker.C {
-		sess.RLock()
-		conn := sess.WSConn
-		state := sess.State
-		sess.RUnlock()
-
-		if conn == nil || state != session.SessionActive {
-			return
-		}
-
-		keepalive := protocol.CreateKeepaliveMessage()
-		if err := conn.WriteMessage(websocket.BinaryMessage, keepalive.Serialize()); err != nil {
-			log.Printf("[%s] Failed to send keepalive: %v", sess.ID, err)
-			return
-		}
-	}
-}
-
 // sessionCleanup удаляет мёртвые сессии
 func sessionCleanup(registry *session.Registry, cfg *config.ServerConfig) {
 	ticker := time.NewTicker(30 * time.Second)
@@ -491,6 +456,7 @@ func sessionCleanup(registry *session.Registry, cfg *config.ServerConfig) {
 			if time.Since(lastActivity) > cfg.GetKeepaliveTimeout() {
 				log.Printf("[%s] Session expired (last activity: %s ago)",
 					s.ID, time.Since(lastActivity).Round(time.Second))
+				s.StopWriter()
 				s.Lock()
 				s.State = session.SessionExpired
 				if s.WSConn != nil {

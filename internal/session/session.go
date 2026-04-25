@@ -41,6 +41,9 @@ type Session struct {
 	PacketsRecv    uint32
 	ClientVersion  string // версия клиента
 	mu             sync.RWMutex
+	// Канал для отправки данных клиенту (один writer goroutine читает)
+	writeCh   chan []byte
+	writeDone chan struct{}
 }
 
 // Lock блокирует мьютекс сессии
@@ -84,22 +87,92 @@ func (s *Session) SetConnectionState(state SessionState) {
 	s.State = state
 }
 
-// WritePacket безопасно записывает пакет в WebSocket сессии
-// Возвращает ошибку если соединение закрыто или произошла ошибка
-func (s *Session) WritePacket(data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.WSConn == nil {
-		return fmt.Errorf("no websocket connection")
-	}
-	return s.WSConn.WriteMessage(websocket.BinaryMessage, data)
+// InitWriter инициализирует каналы writer'а (вызывается до StartWriter)
+func (s *Session) InitWriter(chSize int) {
+	s.writeCh = make(chan []byte, chSize)
+	s.writeDone = make(chan struct{})
 }
 
-// GetConn возвращает текущее WebSocket соединение
-func (s *Session) GetConn() *websocket.Conn {
+// StartWriter запускает горутину writer'а.
+// keepaliveInterval — интервал отправки keepalive, 0 = отключён.
+// onError — callback при ошибке записи (для логирования и сигнала остановки)
+func (s *Session) StartWriter(keepaliveInterval time.Duration, onError func(error)) {
+	go func() {
+		var keepaliveTicker *time.Ticker
+		var keepaliveCh <-chan time.Time
+		if keepaliveInterval > 0 {
+			keepaliveTicker = time.NewTicker(keepaliveInterval)
+			defer keepaliveTicker.Stop()
+			keepaliveCh = keepaliveTicker.C
+		}
+
+		keepaliveMsg := createKeepaliveMessageBytes()
+
+		for {
+			select {
+			case data := <-s.writeCh:
+				if err := s.writeToConn(data); err != nil {
+					if onError != nil {
+						onError(err)
+					}
+					return
+				}
+			case <-keepaliveCh:
+				if err := s.writeToConn(keepaliveMsg); err != nil {
+					if onError != nil {
+						onError(err)
+					}
+					return
+				}
+			case <-s.writeDone:
+				return
+			}
+		}
+	}()
+}
+
+// StopWriter сигнализирует writer'е об остановке
+func (s *Session) StopWriter() {
+	select {
+	case <-s.writeDone:
+		// уже остановлен
+	default:
+		close(s.writeDone)
+	}
+}
+
+// QueueWrite ставит данные в очередь на отправку.
+// Неблокирующий: если канал полон — данные дропаются.
+func (s *Session) QueueWrite(data []byte) bool {
+	if s.writeCh == nil {
+		return false
+	}
+	select {
+	case s.writeCh <- data:
+		return true
+	default:
+		// Канал полон — медленный клиент, дропаем
+		return false
+	}
+}
+
+// writeToConn безопасно пишет в WebSocket соединение
+func (s *Session) writeToConn(data []byte) error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.WSConn
+	conn := s.WSConn
+	s.mu.RUnlock()
+	if conn == nil {
+		return fmt.Errorf("no websocket connection")
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+// createKeepaliveMessageBytes создаёт бинарное представление KEEPALIVE
+func createKeepaliveMessageBytes() []byte {
+	header := make([]byte, 4)
+	header[0] = 0x03 // MessageTypeKeepalive
+	// Flags=0, PayloadLength=0
+	return header
 }
 
 // Registry — реестр активных сессий
