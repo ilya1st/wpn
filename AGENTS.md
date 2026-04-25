@@ -38,7 +38,7 @@ internal/compression/       ← Сжатие пакетов (zlib)
 - Типы: DATA (0x01), CONTROL (0x02), KEEPALIVE (0x03), FRAGMENT (0x04)
 - Control подтипы: AUTH_*, ROUTES_*, STATISTICS, ERROR, DISCONNECT
 - Сериализация/десериализация сообщений
-- **Фрагментация**: `CreateFragmentMessage` и `ParseFragmentHeader` есть, но НЕ вызываются в cmd/ — механизм разбиения/сборки НЕ реализован. `config.fragment_timeout` парсится но не используется
+- **Фрагментация**: полностью реализована — `Fragmenter` (клиент) разбивает пакеты >65KB, `Assembler` (сервер+клиент) собирает обратно с таймаутом и cleanup. Интегрирована в `cmd/vpnservice/main.go` и `cmd/vpnclient/main.go`
 - ParseAuthResponsePayload — исправлена формула проверки длины
 - ParseAuthSuccessPayload — парсинг SessionID + IPv4 + IPv6 (dual-stack)
 - **AUTH_SUCCESS v2**: SessionID(1+len) + ClientIP4_len(1) + ClientIP4 + ClientIP6_len(1) + ClientIP6 + ServerIP4_len(1) + ServerIP4 + ServerIP6_len(1) + ServerIP6 + Subnet4 + Subnet6
@@ -239,5 +239,5 @@ sudo ./vpnclient -config client.yaml
 
 ---
 
-*Последнее обновление: 24 Апреля 2026*
-*Реестр сессий, per-session маршрутизация, пулы IP, dual-stack AUTH_SUCCESS*
+*Последнее обновление: 25 Апреля 2026*
+*Реестр сессий, per-session маршрутизация, пулы IP, dual-stack AUTH_SUCCESS, фрагментация пакетов*
