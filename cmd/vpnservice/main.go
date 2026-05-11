@@ -320,7 +320,7 @@ func sendRoutesConfig(conn *websocket.Conn, routeEntries []config.RouteEntry) er
 }
 
 // tunRouter — единственный reader TUN интерфейса.
-// Читает пакеты, определяет целевой IP, маршрутизирует через QueueWrite.
+// Читает пакеты, определяет целевую сессию, маршрутизирует через QueueWrite.
 func tunRouter(tunIface *tun.Interface, registry *session.Registry, cfg *config.ServerConfig) {
 	buf := make([]byte, 65535)
 
@@ -334,8 +334,7 @@ func tunRouter(tunIface *tun.Interface, registry *session.Registry, cfg *config.
 		packet := make([]byte, n)
 		copy(packet, buf[:n])
 		isIPv6 := tun.IsIPv6Packet(packet)
-		targetIP := getPacketDstIP(packet)
-		targetSession := registry.GetSessionByIP(targetIP)
+		targetSession := registry.GetSessionByPacket(packet)
 
 		if targetSession == nil {
 			continue
@@ -343,8 +342,8 @@ func tunRouter(tunIface *tun.Interface, registry *session.Registry, cfg *config.
 
 		msg := buildSessionMessage(packet, isIPv6, cfg)
 		if !targetSession.QueueWrite(msg, cfg.GetWriteChannelTimeout()) {
-			log.Printf("[%s] writeCh full for %v, terminating session (dst=%v)",
-				targetSession.ID, cfg.GetWriteChannelTimeout(), targetIP)
+			log.Printf("[%s] writeCh full for %v, terminating session",
+				targetSession.ID, cfg.GetWriteChannelTimeout())
 			targetSession.SetConnectionState(session.SessionReconnecting)
 			targetSession.StopWriter()
 			targetSession.Lock()
@@ -497,23 +496,4 @@ func sessionCleanup(registry *session.Registry, cfg *config.ServerConfig) {
 	}
 }
 
-// getPacketDstIP извлекает IP назначения из пакета
-func getPacketDstIP(packet []byte) net.IP {
-	if len(packet) == 0 {
-		return nil
-	}
-	version := packet[0] >> 4
-	switch version {
-	case 4:
-		if len(packet) < 20 {
-			return nil
-		}
-		return net.IPv4(packet[16], packet[17], packet[18], packet[19])
-	case 6:
-		if len(packet) < 40 {
-			return nil
-		}
-		return net.IP(packet[24:40])
-	}
-	return nil
-}
+

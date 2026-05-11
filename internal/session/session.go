@@ -159,8 +159,8 @@ type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session       // sessionID → Session
 	byLogin  map[string][]*Session     // login → [Session]
-	byIP4    map[string]*Session       // IPv4 string → Session
-	byIP6    map[string]*Session       // IPv6 string → Session
+	byIP4    map[uint32]*Session       // IPv4 uint32 → Session
+	byIP6    map[uint64]map[uint64]*Session // IPv6 hi→lo→Session
 	ip4Pool  *IPPool                   // пул IPv4 адресов
 	ip6Pool  *IPPool                   // пул IPv6 адресов
 }
@@ -170,8 +170,8 @@ func NewRegistry() *Registry {
 	return &Registry{
 		sessions: make(map[string]*Session),
 		byLogin:  make(map[string][]*Session),
-		byIP4:    make(map[string]*Session),
-		byIP6:    make(map[string]*Session),
+		byIP4:    make(map[uint32]*Session),
+		byIP6:    make(map[uint64]map[uint64]*Session),
 	}
 }
 
@@ -254,12 +254,16 @@ func (r *Registry) CreateSession(login, clientIP string, conn *websocket.Conn, s
 	r.sessions[sessionID] = s
 	r.byLogin[login] = append(r.byLogin[login], s)
 
-	// Регистрируем в IP-мапах для быстрого поиска
-	if len(ip4) > 0 {
-		r.byIP4[ip4.String()] = s
+	// Регистрируем в IP-мапах для быстрого поиска (без аллокаций)
+	if len(ip4) >= 4 {
+		r.byIP4[ipv4ToUint32(ip4)] = s
 	}
-	if len(ip6) > 0 {
-		r.byIP6[ip6.String()] = s
+	if len(ip6) >= 16 {
+		hi, lo := ipv6ToUint64(ip6)
+		if r.byIP6[hi] == nil {
+			r.byIP6[hi] = make(map[uint64]*Session)
+		}
+		r.byIP6[hi][lo] = s
 	}
 
 	return s, nil
@@ -304,19 +308,43 @@ func (r *Registry) GetSessionsByLogin(login string) []*Session {
 	return result
 }
 
-// GetSessionByIP возвращает сессию по IP адресу (O(1) через hashmap)
-func (r *Registry) GetSessionByIP(ip net.IP) *Session {
+// GetSessionByPacket возвращает сессию по IP адресу назначения из сырого пакета.
+// Извлекает dst IP прямо из байтов пакета — 0 аллокаций, ключи на стеке.
+func (r *Registry) GetSessionByPacket(packet []byte) *Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if ip == nil {
+	if len(packet) == 0 {
 		return nil
 	}
-	// Сначала ищем в IPv4
-	if ip4 := ip.To4(); ip4 != nil {
-		return r.byIP4[ip4.String()]
+
+	version := packet[0] >> 4
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return nil
+		}
+		key := uint32(packet[16])<<24 | uint32(packet[17])<<16 |
+			uint32(packet[18])<<8 | uint32(packet[19])
+		return r.byIP4[key]
+	case 6:
+		if len(packet) < 40 {
+			return nil
+		}
+		// IPv6: dst в байтах 24-39
+		hi := uint64(packet[24])<<56 | uint64(packet[25])<<48 |
+			uint64(packet[26])<<40 | uint64(packet[27])<<32 |
+			uint64(packet[28])<<24 | uint64(packet[29])<<16 |
+			uint64(packet[30])<<8 | uint64(packet[31])
+		lo := uint64(packet[32])<<56 | uint64(packet[33])<<48 |
+			uint64(packet[34])<<40 | uint64(packet[35])<<32 |
+			uint64(packet[36])<<24 | uint64(packet[37])<<16 |
+			uint64(packet[38])<<8 | uint64(packet[39])
+		if m, ok := r.byIP6[hi]; ok {
+			return m[lo]
+		}
+		return nil
 	}
-	// Потом в IPv6
-	return r.byIP6[ip.String()]
+	return nil
 }
 
 // RemoveSession удаляет сессию и освобождает адреса.
@@ -345,11 +373,17 @@ func (r *Registry) RemoveSession(sessionID string) {
 		}
 
 		// Удаляем из IP-мапов
-		if len(s.IP4) > 0 {
-			delete(r.byIP4, s.IP4.String())
+		if len(s.IP4) >= 4 {
+			delete(r.byIP4, ipv4ToUint32(s.IP4))
 		}
-		if len(s.IP6) > 0 {
-			delete(r.byIP6, s.IP6.String())
+		if len(s.IP6) >= 16 {
+			hi, lo := ipv6ToUint64(s.IP6)
+			if m, ok := r.byIP6[hi]; ok {
+				delete(m, lo)
+				if len(m) == 0 {
+					delete(r.byIP6, hi)
+				}
+			}
 		}
 	}
 	// Если reconnecting — IP остаются в мапах, сессия ждёт реконнекта
@@ -414,6 +448,22 @@ func (r *Registry) CleanupExpired() int {
 		}
 	}
 	return count
+}
+
+// ipv4ToUint32 преобразует net.IP (IPv4) в uint32 (big-endian).
+// Вызывать только если len(ip) >= 4.
+func ipv4ToUint32(ip net.IP) uint32 {
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+// ipv6ToUint64 преобразует net.IP (IPv6) в пару uint64 (big-endian: hi, lo).
+// Вызывать только если len(ip) >= 16.
+func ipv6ToUint64(ip net.IP) (hi, lo uint64) {
+	hi = uint64(ip[0])<<56 | uint64(ip[1])<<48 | uint64(ip[2])<<40 | uint64(ip[3])<<32 |
+		uint64(ip[4])<<24 | uint64(ip[5])<<16 | uint64(ip[6])<<8 | uint64(ip[7])
+	lo = uint64(ip[8])<<56 | uint64(ip[9])<<48 | uint64(ip[10])<<40 | uint64(ip[11])<<32 |
+		uint64(ip[12])<<24 | uint64(ip[13])<<16 | uint64(ip[14])<<8 | uint64(ip[15])
+	return
 }
 
 // IPPool — пул IP адресов для динамической выдачи
